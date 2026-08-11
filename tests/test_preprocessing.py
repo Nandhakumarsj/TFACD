@@ -1,0 +1,81 @@
+import base64
+from datetime import datetime, timedelta, timezone
+
+from tfacd.agentic.history import EntityHistory
+from tfacd.runtime.contracts import CyberAction, CyberActionPlan, SessionContext
+from tfacd.trust_boundary import preprocessing
+
+CONFIG = {
+    "session_max_age_seconds": 300,
+    "max_actions_per_plan": 5,
+    "max_parameter_string_length": 32,
+    "max_numeric_parameter": 1000.0,
+    "entity_action_quota_per_hour": 20,
+}
+
+
+def fresh_session(agent_id="agent-1", age_seconds=0):
+    issued_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    return SessionContext(agent_id=agent_id, session_id="s1", issued_at=issued_at, nonce="n1")
+
+
+def plan_with(**overrides):
+    defaults = dict(
+        incident_id="inc-1",
+        rationale="Detected Port_Scanning, blocking source.",
+        actions=[CyberAction(capability="block_source", target="10.0.0.5", parameters={})],
+        confidence=0.8,
+    )
+    defaults.update(overrides)
+    return CyberActionPlan(**defaults)
+
+
+def test_happy_path_accepted():
+    result, normalized = preprocessing.run(plan_with(), fresh_session(), EntityHistory(), CONFIG)
+    assert result.accepted
+    assert normalized.rationale == plan_with().rationale
+
+
+def test_stale_session_rejected():
+    result, _ = preprocessing.run(plan_with(), fresh_session(age_seconds=3600), EntityHistory(), CONFIG)
+    assert not result.accepted
+    assert any("expired" in r for r in result.reasons)
+
+
+def test_oversized_plan_rejected():
+    actions = [CyberAction(capability="observe") for _ in range(10)]
+    result, _ = preprocessing.run(plan_with(actions=actions), fresh_session(), EntityHistory(), CONFIG)
+    assert not result.accepted
+    assert any("too many actions" in r for r in result.reasons)
+
+
+def test_zero_width_characters_are_stripped_not_rejected():
+    poisoned = plan_with(rationale="Detected​ Port_Scanning​, blocking source.")
+    result, normalized = preprocessing.run(poisoned, fresh_session(), EntityHistory(), CONFIG)
+    assert result.accepted
+    assert "​" not in normalized.rationale
+
+
+def test_hidden_base64_parameter_rejected():
+    encoded = base64.b64encode(b"rm -rf / #malicious").decode()
+    action = CyberAction(capability="block_source", parameters={"note": encoded})
+    result, _ = preprocessing.run(plan_with(actions=[action]), fresh_session(), EntityHistory(), CONFIG)
+    assert not result.accepted
+    assert any("base64" in r for r in result.reasons)
+
+
+def test_non_finite_numeric_parameter_rejected():
+    action = CyberAction(capability="rate_limit", parameters={"limit": float("nan")})
+    result, _ = preprocessing.run(plan_with(actions=[action]), fresh_session(), EntityHistory(), CONFIG)
+    assert not result.accepted
+    assert any("non-finite" in r for r in result.reasons)
+
+
+def test_hourly_quota_exceeded_rejected():
+    history = EntityHistory()
+    session = fresh_session()
+    for _ in range(CONFIG["entity_action_quota_per_hour"]):
+        history.append(session.agent_id, "trust_decision", {"accepted": True})
+    result, _ = preprocessing.run(plan_with(), session, history, CONFIG)
+    assert not result.accepted
+    assert any("quota" in r for r in result.reasons)

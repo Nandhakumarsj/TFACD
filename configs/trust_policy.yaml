@@ -1,0 +1,13 @@
+# Enumerable policy data for the Adaptive Semantic Trust Boundary. Scalar
+# tunables (weights, thresholds, quotas) live in edge_iiot.yaml's trust_boundary
+# section instead - this file is capability/text mapping data, same relationship
+# threat_context.yaml has to edge_iiot.yaml.
+#
+# Rationale templates are NOT duplicated here: tfacd.agentic.decision_engine
+# .RATIONALE_TEMPLATES is the single source of truth (it both builds a plan's
+# rationale and is what semantic_risk.py scores that rationale against), so
+# there's exactly one place drift could happen instead of two.
+
+capability_whitelist:
+  low_risk: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture]
+  high_risk: [rate_limit, block_source, isolate_segment, rotate_session]

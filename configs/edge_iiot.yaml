@@ -1,0 +1,93 @@
+seed: 42
+
+data:
+  # Change this to the selected DNN CSV on your workstation.
+  raw_csv: "./datasets/Edge_IIoTset/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
+  output_dir: "artifacts/data"
+  label_column: "auto"
+  attack_type_column: "auto"
+  timestamp_column: "auto"
+  group_column: "auto"
+  drop_columns: []
+  identifier_patterns:
+    - "^src_ip$"
+    - "^dst_ip$"
+    - "^source_ip$"
+    - "^destination_ip$"
+    - "^frame\\.time"
+    - "^ip\\.src_host$"
+    - "^ip\\.dst_host$"
+    - "^arp\\.src\\.proto_ipv4$"
+    - "^arp\\.dst\\.proto_ipv4$"
+  test_size: 0.15
+  validation_size: 0.15
+  max_rows: null
+  sequence_length: 1
+  sequence_stride: 1
+  preserve_input_order: false
+
+model:
+  conv_channels: [64, 128]
+  kernel_size: 3
+  pooled_features: 16
+  lstm_hidden: 128
+  lstm_layers: 1
+  bidirectional: true
+  dropout: 0.25
+
+training:
+  epochs: 10
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 3
+  class_weighting: true
+  mixed_precision: false
+  num_workers: 0
+
+federated:
+  num_clients: 5
+  partition_mode: "dirichlet"
+  dirichlet_alpha: 0.5
+  min_samples_per_client: 100
+  rounds: 3
+  local_epochs: 1
+
+integrity:
+  max_abs_parameter: 1000000.0
+  max_update_norm_ratio: 10.0
+  pca_components: 5
+  cluster_method: "agglomerative"
+  min_benign_fraction: 0.5
+  ema_alpha: 0.3
+  reject_below_trust: 0.35
+  # With num_clients=5, trim_ratio must be >= 0.2 to trim even one client
+  # (floor(5 * ratio) == 0 below that, silently disabling trimmed_mean).
+  trim_ratio: 0.2
+  # Gate 4 found the detector alone only catches malicious clients ~33% of the
+  # time (TPR); coordinate_median/trimmed_mean stayed robust under every attack
+  # tested. Aggregating survivors with a robust method, not plain weighted_mean,
+  # is defense-in-depth for whatever the detector misses.
+  aggregation_method: "trimmed_mean"
+  # Gate 4 attack-simulation parameters (scripts/run_integrity_benchmark.py only).
+  attack_gaussian_sigma: 0.5
+  attack_gradual_scaling_growth: 1.0
+
+runtime:
+  threat_context_mapping: "configs/threat_context.yaml"
+  trust_policy_path: "configs/trust_policy.yaml"
+
+trust_boundary:
+  weight_semantic_risk: 0.4       # ws
+  weight_context_consistency: 0.3 # wc
+  weight_behavioral_trust: 0.3    # wb
+  trust_level_thresholds: {low: 0.40, medium: 0.65, high: 0.85}
+  max_actions_per_plan: 5
+  max_parameter_string_length: 512
+  max_numeric_parameter: 1000000.0
+  session_max_age_seconds: 300
+  entity_action_quota_per_hour: 20
+  sbert_model_name: "all-MiniLM-L6-v2"
+  # Smooths behavioral trust across repeated interactions, same idiom as
+  # PCAClusterEMAFilter.ema_alpha in the FTIL layer.
+  ema_alpha: 0.3

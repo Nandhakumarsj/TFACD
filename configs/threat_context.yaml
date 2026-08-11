@@ -1,0 +1,31 @@
+# Initial deterministic mapping. Review and refine during the runtime-plane milestone.
+# MITRE IDs are placeholders until verified against the exact Edge-IIoT label semantics.
+Normal:
+  severity: informational
+  priority: P4
+  mitre_techniques: []
+  allowed_playbooks: [observe, log_event]
+
+DDoS_HTTP_Flood:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
+
+DDoS_TCP_SYN_Flood:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
+
+Port_Scanning:
+  severity: medium
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [block_source, increase_logging, create_ticket]
+
+MITM:
+  severity: high
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [isolate_segment, rotate_session, start_capture, notify_soc]
