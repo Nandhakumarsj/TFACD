@@ -95,6 +95,76 @@ python scripts/generate_deployment_certs.py    # CA + server cert, SuperNode aut
 
 Manual sequence, if reproducing by hand: generate certs -> start `flower-superlink --ssl-certfile ... --ssl-keyfile ... --ssl-ca-certfile ... --enable-supernode-auth` -> `flwr supernode register <pubkey> local-tls` per node (returns a `node_id`, requires the SuperLink already running) -> start each `flower-supernode --auth-supernode-private-key ... --root-certificates ... --superlink 127.0.0.1:9092 --clientappio-api-address 127.0.0.1:909<N>` (each SuperNode needs a distinct ClientAppIo port when running more than one on the same machine) -> `flwr run . local-tls --stream` (the SuperLink connection is a *positional* argument, not `--federation` - that flag is for Flower's hosted/cloud federation IDs in `@account/name` form, unrelated to selecting a local connection).
 
+## Live attack-scenario streaming (optional, not the default path)
+
+`scripts/run_streaming_demo.py` replays one flattened CSV (`DNN-EdgeIIoT-dataset.csv`) in a single batch. `./datasets/Edge_IIoTset` also has the **raw, per-attack-type and per-sensor-type CSV+PCAP capture pairs** that flattened file was itself assembled from (`Attack traffic/<Type>_attack.csv`+`.pcap`, `Normal traffic/<Sensor>/<Sensor>.csv`+`.pcap`) - the same 63-column schema, so they're structurally compatible with the existing feature pipeline already (`StreamingFeatureExtractor` selects columns by name, not file identity). `streaming/live_source.py` + `streaming/scenario.py` use these to build a genuinely **time-paced, multi-source** input stream instead of a flat replay - a normal-traffic baseline with a real attack file injected mid-stream, this project's answer to "there is no live MQTT/Modbus sensor to stream from."
+
+**Why PCAP timestamps drive pacing, not the CSV's own `frame.time` column:** measured directly against real files in this repo - `Normal traffic/Modbus/Modbus.csv`'s `frame.time` column is **empty on every row**; only the paired `Modbus.pcap` carries real capture timing. Attack-traffic CSVs do have a populated `frame.time`, but `streaming/pcap_timing.py` (stdlib `struct` only, no scapy/pyshark/dpkt - reads only the 24-byte global header and each packet's 16-byte record header, never packet content) is used uniformly for both, since it's the only source that works on every file. CSV rows and PCAP packets are paired positionally, in capture order - justified by measured >99% row/packet-count alignment, documented as an approximation, not an exact guarantee.
+
+```powershell
+python scripts/run_attack_scenario.py --scenario portscan_source_block
+python scripts/run_attack_scenario.py --scenario ddos_segment_isolation
+python scripts/run_attack_scenario.py --scenario portscan_source_block --speed 1.0   # true real-time pacing, not compressed
+```
+
+`configs/attack_scenarios.yaml` defines the scenarios declaratively (baseline source(s), attack file, `speed_multiplier`, an `expected_capability` that's reported, never forced). Two attack-response scenarios reuse **existing, already-whitelisted** capabilities - no new capability strings were added to `configs/trust_policy.yaml`:
+
+| scenario | injected attack | "closest real capability" |
+|---|---|---|
+| `portscan_source_block` ("IP isolation") | `Port_Scanning` | `block_source` |
+| `ddos_segment_isolation` ("network disconnect") | `DDoS TCP SYN Flood` | `isolate_segment` |
+
+This is simulated **input pacing**, not simulated **response** - whether a capability actually executes for real is entirely `trust_boundary.executor.mode`'s decision (see "Real response execution" below), never this script's.
+
+**A third scenario, `modbus_normal_traffic_generalization_check`, exists to surface a finding, not to demo a clean success:** measured directly (n=100 rows each) - every Normal-traffic sensor type in this dataset (`Temperature_and_Humidity`, `Soil_Moisture`, `Distance`, `Water_Level`, `phValue`, `Sound_Sensor`, `Flame_Sensor`, `Heart_Rate`, `IR_Receiver`) classifies **100% correctly as `Normal`** through the certified model - except real Modbus traffic, which classifies as `Normal` only **~21% of the time** (59% misclassified `DDoS_UDP`, 20% `Port_Scanning`). Given this project's explicit IIoT/SCADA framing, a model that mostly fails to recognize real Modbus traffic as benign is a genuine, worth-stating generalization gap - the two attack-response scenarios above deliberately use `Temperature_and_Humidity` as their baseline instead (which does classify correctly) so their normal-vs-attack contrast is legible, rather than quietly avoiding Modbus everywhere. Run `python scripts/run_attack_scenario.py --scenario modbus_normal_traffic_generalization_check --max-incidents 100` to reproduce this yourself.
+
+PCAP **packet content** is never parsed - only capture timestamps, for pacing. Rebuilding this dataset's flow-feature-extraction methodology from raw packets (to derive NEW features rather than reuse the paired CSV's) would be a substantial, error-prone undertaking with no existing dependency or reference implementation in this repo; the CSVs remain the sole source of feature values.
+
+## Real response execution (optional, not the default path - "simulate" always is)
+
+Every response action was, until now, always simulated: `SimulatedExecutor` (`trust_boundary/capability_enforcement.py`) only ever logs "would execute" and returns success - its own docstring called this "a deployment-specific extension point, not something this repo pretends to have." `trust_boundary/production_executor.py::ProductionExecutor` fills that seam: real OS-level actions, gated behind an explicit config switch that defaults to the old behavior.
+
+```yaml
+trust_boundary:
+  executor:
+    mode: "simulate"    # default, unchanged behavior. "production" takes real action - see below.
+    protected_targets: ["127.0.0.1/32", "169.254.0.0/16", "::1/128"]  # hard rail, add your real
+                                                                        # management/gateway addresses
+```
+
+| capability | Linux (primary real backend) | Windows (dev-workstation backend) |
+|---|---|---|
+| `block_source` | `nftables` (self-contained `tfacd` table/chain), `iptables` fallback if `nft` isn't installed | `netsh advfirewall firewall add rule ... action=block` |
+| `isolate_segment` | same as above, against the action's subnet/CIDR | same as above, against the subnet/CIDR |
+| `rate_limit` | `nftables`/`iptables` rate-limit rule, best-effort | **no backend** - no reliable built-in Windows CLI equivalent; falls back to simulated logging for this one capability, with a loud log line, never a silent no-op |
+| `rotate_session` | real, but application-level: appends a timestamped rotation-request record (`artifacts/trust_boundary/session_rotation_requests.jsonl`) - this project has no live session-issuance service to rotate synchronously against (every `SessionContext` here is already freshly minted per call) |
+| low-risk (`observe`, `log_event`, `increase_logging`, `create_ticket`, `notify_soc`, `start_capture`) | real, persisted log entry (`artifacts/trust_boundary/production_action_log.jsonl`), no OS action |
+
+**Honest limitation, not silently worked around:** `isolate_segment`'s target is `alert.target_asset`, an asset **name** (e.g. `"plc-01"`) in this project's data model - there is no asset-name-to-IP/CIDR inventory anywhere in this repo. `ProductionExecutor` refuses cleanly (returns `False`, logs why) rather than fabricate a mapping, whenever a network-acting capability's target isn't already a parseable IP/CIDR.
+
+**Correctness fix this workstream required, found by re-reading the actual code rather than assumed:** `agentic/decision_engine.py` previously handed **every** capability - including `block_source`/`rate_limit`, which act on the attacker - `alert.target_asset` (the protected device) as `target`. Harmless while only `SimulatedExecutor` ever read it; a real bug once a real executor needs to know *what* to block. Fixed: `block_source`/`rate_limit` now get `alert.source_id`; `isolate_segment` and every other capability keep `target_asset`, unchanged. The LLM-backed engine's system prompt got the same instruction added.
+
+`os.detection` (`platform.system()`) picks the backend automatically - no config needed beyond `mode: "production"`. Verify on your own hardware before trusting either backend, the same discipline this README already applies to the LLM benchmark gate.
+
+**Windows backend: live-fire verified end to end on this project's own dev workstation**, from an elevated (Administrator) terminal, against `203.0.113.1` (RFC 5737 - reserved for documentation/testing, guaranteed non-routable, so this proves the mechanism with zero possibility of affecting real traffic):
+
+```powershell
+.\.venv\Scripts\python.exe -c "from tfacd.runtime.contracts import CyberAction; from tfacd.trust_boundary.production_executor import ProductionExecutor; e = ProductionExecutor(); a = CyberAction(capability='block_source', target='203.0.113.1'); print('execute() ->', e.execute(a))"
+netsh advfirewall firewall show rule name=tfacd_block_source_203.0.113.1   # confirm the rule really exists
+netsh advfirewall firewall delete rule name=tfacd_block_source_203.0.113.1
+```
+
+Measured result: `execute()` returned `True`, `returncode: 0` in the recorded action log, `netsh ... show rule` confirmed `RemoteIP: 203.0.113.1/32`, `Action: Block`, `Direction: In` exactly as constructed, and delete succeeded. A non-elevated terminal correctly fails closed instead (`execute()` returns `False`, logged as `returncode: 1` - "requires elevation" from Windows itself, not a silent success) - real command construction and honest failure reporting were verified first, from a normal terminal, before re-running elevated.
+
+**Linux backend: unit/command-construction-tested only** (see `tests/test_production_executor.py`) - no Linux environment exists on this dev workstation to live-fire it here. Verify on your own Linux target before trusting it:
+
+```bash
+sudo nft list tables                      # confirm nftables is available (or plan on the iptables fallback)
+# then, with trust_boundary.executor.mode: "production" set locally, run a scenario and confirm:
+sudo nft list table inet tfacd            # the rule really exists
+sudo nft delete table inet tfacd          # clean up afterward
+```
+
 ## LLM-backed Agentic Decision Engine (optional, not the default path)
 
 Two decision engines exist, selected by `agentic.decision_engine.engine` in `configs/edge_iiot.yaml`:
@@ -124,6 +194,26 @@ python scripts/run_llm_engine_benchmark.py --model gemma3:4b --structured-output
 python scripts/run_streaming_demo.py
 ```
 
+### Switchable main/fallback model (e.g. moving this codebase to a Quadro P5000)
+
+`agentic.llm.model` (primary) and `agentic.llm.fallback_model` (optional, `null` by default) are two independent config keys, both requiring real Ollama tool-calling (`structured_output_method: "function_calling"` - this is not a `json_mode` escape hatch). If the primary model's graph exhausts its retries or errors, `LLMDecisionEngine` retries the *same* reason/validate/retry logic against the fallback model before dropping to the deterministic template engine - a three-tier chain (`engine` field records which: `"llm"`, `"llm:fallback_model"`, or `"fallback:<reason>"`). This is a **model-level** fallback, distinct from the engine-level `llm -> template` fallback that already existed.
+
+```powershell
+# Benchmark BOTH models in one run - writes {"primary": {...}, "fallback": {...}} instead of the
+# flat single-model report shape, so the second model no longer silently clobbers the first's report:
+python scripts/run_llm_engine_benchmark.py --model gemma4:12b --fallback-model qwen3:8b
+
+# Only after that report says primary.go_no_go.go: true (and fallback.go_no_go.go: true, if you want
+# the fallback tier wired in) do you edit the local config:
+#   agentic.llm.model: "gemma4:12b"
+#   agentic.llm.fallback_model: "qwen3:8b"
+python scripts/run_streaming_demo.py
+```
+
+**Gemma 4** (Google, released April 2026 - confirmed against Ollama's own library listing and Google's developer blog, not assumed) ships in `e2b`/`e4b`/`12b`/`26b`/`31b` sizes with real tool-calling support, unlike Gemma 3. `--model`/`--fallback-model` and `structured_output_method` are plain config values everywhere in this codebase - neither is ever inferred from a model name - so `run_llm_engine_benchmark.py` needs no code change to benchmark `gemma4:12b`/`gemma4:26b`, only `ollama pull gemma4:12b` first. **What this README does not do: claim gemma4 passes the gate on your hardware.** Only your own benchmark report decides that - see the P4000/P5000 table below, which follows the identical discipline for the numbers that already exist here.
+
+The checked-in `configs/edge_iiot.yaml` default stays `agentic.llm.model: "qwen3:8b"`, `fallback_model: null` - the only model with an actual passing report on this project's own hardware. Flipping either key is a two-line edit once your own run says `go: true`; nothing here ships an unverified default.
+
 **The benchmark gate is a real precondition, not advice.** `agentic/factory.py::build_decision_engine` reads `artifacts/agentic/llm_benchmark_report.json` and refuses to construct the LLM engine unless it says `go: true` - the same "verify before load" discipline `verify_release()` applies to the certified checkpoint. It measures VRAM delta (via `nvidia-smi`, since Ollama runs as its own process and `torch.cuda.memory_allocated()` cannot see it), tokens/sec, p50/p95 latency, and JSON-schema validity both raw and after retry, across one representative alert per real attack class.
 
 Measured on this project's actual workstation (Quadro P4000, 8GB, Pascal - **no tensor cores**), `qwen3:8b` at `num_ctx: 4096`:
@@ -150,6 +240,8 @@ The P4000 and P5000 are the same Pascal generation (no tensor cores either way) 
 | VRAM gate | passes at 5476MB/8192MB (67%) | expect well under the 85% safety margin even with a larger model |
 | latency | p50 29.8s / p95 39.5s | likely lower given more cores/bandwidth, but not measured - do not assume a specific number |
 
+**gemma4 as a P5000 opt-in:** `gemma4:12b` (~8GB dense) is a reasonable P5000 main-model candidate to benchmark; `gemma4:26b` is a 26B MoE model (~4B active) whose actual quantized VRAM footprint against the 85%-of-free-VRAM gate is genuinely uncertain from a spec sheet alone - it may or may not fit even a 16GB card once KV cache/context overhead is included. Run `python scripts/run_llm_engine_benchmark.py --model gemma4:26b --fallback-model qwen3:8b --total-vram-mb 16384` (or omit `--total-vram-mb`, auto-detection works on a P5000 too) and let the report - not this table - decide. `qwen3:8b` as `fallback_model` is a safe choice on either card: it already has a passing report on the smaller P4000, so it's essentially guaranteed to fit a P5000's extra headroom too.
+
 ### Research honesty
 
 - **The latency ceiling was revised after measuring, and that is recorded rather than hidden.** It started at 30s (an unmeasured guess) and was raised to 60s once the real p95 came in at ~40s. It is still a real gate - a model 50% slower than what was measured fails it. `~40s/decision` bounds a `max_incidents: 10` run at 5-7 minutes of LLM time, against an IDS stage that scores 20,000 records in 14s. The LLM is deliberately nowhere near that hot path.
@@ -172,6 +264,28 @@ The P4000 and P5000 are the same Pascal generation (no tensor cores either way) 
 - **Qwen3's context is 32K natively**, not 128K - 128K requires YaRN extension, which Qwen's own documentation advises against enabling unless genuinely needed.
 - RAG over a security corpus and the "with-vs-without ASTB" comparison experiment are **not implemented** and are deliberately out of scope for this pass.
 
+## Analyst feedback loop: labeling trust decisions (optional, not the default path)
+
+No ground truth for "this trust decision was actually wrong" existed anywhere on the agentic side (`analytics/feedback_loop.py`'s own docstring explains why - it's a *different* feedback loop, grid-searching FTIL's FL-side detector against a labeled attack benchmark that already exists; it deliberately never touches `trust_boundary/`). `analytics/trust_labels.py` + `analytics/threshold_validation.py` are the missing mechanism: any analyst can attach a label to a specific past `AuditEntry` (referenced by its `sequence`, the only stable id an entry already has).
+
+```powershell
+# Look up and label a specific past decision (prints the full AuditEntry first, so you see
+# exactly what you're labeling before committing):
+python scripts/label_trust_decision.py --audit-log artifacts/streaming/audit_log.jsonl --sequence 42 `
+    --label false_positive --analyst-id "your-name" --rationale "block_source fired on benign traffic"
+
+# Once enough labels have accumulated (>= 20 distinct labeled decisions), report agreement
+# between analyst labels and trust_level_thresholds' actual behavior - reports only, never
+# auto-tunes a live safety threshold:
+python scripts/run_trust_threshold_validation.py
+```
+
+No login/user-account system exists anywhere in this codebase - `--analyst-id` is free text. "Anyone can label" is the point of this mechanism, not an oversight, matching this project's current single-workstation trust model. The label store is hash-chained (reuses `chain_hash()` from `integrity/certification.py`, the same primitive `AuditLogger` uses) so a tampered label is as detectable as a tampered audit entry, without a second crypto scheme.
+
+**This becomes more important, not just a research nicety, once `trust_boundary.executor.mode: "production"` is set** (see "Real response execution" below): a labeled decision whose `executed_actions` came from `ProductionExecutor` rather than `SimulatedExecutor` is flagged as the highest-priority row in `run_trust_threshold_validation.py`'s report, since it already had a real-world effect, not just a logged recommendation.
+
+**What this does NOT claim:** the day this mechanism ships, `trust_level_thresholds` are still unvalidated - they stay unvalidated until real labels actually accumulate. Building the mechanism is not the same claim as having validated the thresholds; see "Known gaps" below.
+
 ## Known gaps (2026-08-13 architecture audit, closed out 2026-08-14)
 
 A structured audit (six dimensions, every "bug"/"gap" claim independently adversarially re-verified against the actual code before being recorded - all survived re-verification) found the items below. All but one are now fixed; the remainder is a genuine research limitation, not a patchable bug.
@@ -189,6 +303,22 @@ A structured audit (six dimensions, every "bug"/"gap" claim independently advers
 - **5 of 7 Phase II analytics modules had no script entry point** - now all 7 do: `scripts/run_trust_forecast.py`, `scripts/run_drift_report.py`, `scripts/run_reputation_report.py`, `scripts/run_explainability_report.py` join the pre-existing threshold-optimizer and KPI-dashboard scripts. All four verified against real accumulated history in this repo, producing genuinely sensible output (e.g. the reputation ranking correctly places `agent-well_behaved` first and `agent-risky` last).
 
 **Not fixed - a research limitation, not a bug:** no script validates `trust_level_thresholds` (0.40/0.65/0.85) against real labeled outcomes. This can't be patched the way the items above could: `feedback_loop.py`'s own docstring explains why - no ground truth exists anywhere for "this trust decision was actually wrong" (unlike the FL-side detector, which Gate 4's labeled attack benchmark *can* validate against). Closing this would require building an analyst-feedback labeling mechanism first, a separate, larger scope than a fix.
+
+## Known gaps (2026-08-20 follow-up pass)
+
+**Fixed:**
+- **Analyst feedback loop / trust-decision labeling mechanism now exists** (`analytics/trust_labels.py`, `analytics/threshold_validation.py`, `scripts/label_trust_decision.py`, `scripts/run_trust_threshold_validation.py` - see "Analyst feedback loop" above). This closes the "labeling mechanism must exist first" precondition the 2026-08-14 audit called out - `trust_level_thresholds` themselves remain **unvalidated until real labels actually accumulate**, which is a separate, ongoing claim from "the mechanism exists," not the same one.
+- **`plan.rationale` obfuscation-check gap** - `trust_boundary/preprocessing.py` ran the base64/hex/URL-encoding/leetspeak obfuscation check over every string `action.parameter`, but never over `plan.rationale` itself, despite canonicalizing it - the field most exposed to an LLM-authored obfuscated instruction-override payload. Fixed: rationale now runs through the same existing check.
+- **Private key storage hygiene** - `security/certificates.py` and `integrity/signing.py` wrote every private key (CA, server, SuperNode auth, Ed25519 signing) with no OS permission hardening. Fixed: `os.chmod(0o600)`-equivalent applied after each write - a no-op beyond the read-only bit on this project's Windows dev box, real protection on the Linux IIoT edge devices that are this project's actual deployment target.
+- **`certification.py::verify_release`'s `signature_ok is not False` boolean check** treated an unperformed signature check (`None`) as passing regardless of `require_signature`. Not exploitable through any real caller today (every default is `require_signature=True`), but the condition now spells out the actual safe invariant (`signature_ok is True or (signature_ok is None and not require_signature)`) instead of relying on an unstated one holding forever.
+- **Dead config key removed** - `agentic.decision_engine.fallback_engine: "template"` was never read anywhere in the codebase (confirmed via full-repo search). Removed rather than left as a config value that silently did nothing; the engine-level `llm -> template` fallback it looked like it controlled is not actually configurable (it's the one architecturally-fixed fallback tier) - see "Switchable main/fallback model" above for the model-level fallback that *is* now configurable.
+- **`decision_engine.py` target-selection bug, found while building the real response executor** - every capability, including `block_source`/`rate_limit` (which act on the attacker), was handed `alert.target_asset` (the protected device) as `CyberAction.target`, never `alert.source_id` (the attacker). Harmless while only `SimulatedExecutor` ever read `target` (it only ever logged it); a real bug once `ProductionExecutor` needs to know what to actually block. Fixed and tested - see "Real response execution" above.
+
+**Not fixed - documented, not silently worked around:**
+- **No separately-pinned certification trust root.** `integrity/certification.py::verify_release`'s Ed25519 public key lives in the same `artifacts/` tree as the model/manifest/signature it verifies - there is no independent distribution of the trust root. Real PKI trust-root distribution (out-of-band key pinning, a separate distribution channel) is a substantially larger change than Phase-I's scope; this is recorded as a known limitation rather than a silent fix that would overclaim what actually changed.
+- **No asset-name-to-IP/CIDR inventory.** `isolate_segment`'s target is an asset *name* (e.g. `"plc-01"`), never a network address, anywhere in this project's data model - `ProductionExecutor` refuses cleanly rather than fabricate a mapping (see "Real response execution" above). A real deployment needs its own asset inventory to make this capability's real backend actionable.
+- **Modbus traffic generalization gap**, found while building live attack-scenario streaming: the certified model recognizes real Modbus captures as `Normal` only ~21% of the time (measured, n=100), vs 100% for every other Normal-traffic sensor type in this dataset (see "Live attack-scenario streaming" above). Kept visible via a dedicated diagnostic scenario rather than routed around.
+- **`shap`/`lime` are imported by `analytics/explainability.py` but not declared in any `pyproject.toml` optional-dependency group** - a real packaging gap (installing succeeds today only because a prior `pip install` in this environment happened to pull them in already), low severity, not fixed in this pass since it's outside this pass's actual scope.
 
 **Not yet audited:** the end-to-end failure-mode trace (ingestion → feature extraction → model loading → FTIL aggregation → LLM decision engine → capability execution, stage by stage) was scoped but did not complete before the audit pass that found the items above hit a session usage limit.
 
@@ -213,8 +343,11 @@ A structured audit (six dimensions, every "bug"/"gap" claim independently advers
 - Threat Context Generator (`runtime/threat_context.py`) mapping all 15 real model output classes to severity/priority/playbooks (`configs/threat_context.yaml`), with `strict`/`known_classes` warnings so an unmapped class is loud, not silent;
 - Agentic Decision Engine (`agentic/decision_engine.py`) turning a threat context into a bounded `CyberActionPlan`, with per-entity interaction history (`agentic/history.py`) - plus a config-selectable LLM-backed alternative (`agentic/llm_engine.py`, LangGraph + local Ollama) behind a real on-box benchmark gate, see above;
 - Adaptive Semantic Trust Boundary (`trust_boundary/`): preprocessing, deterministic controls, Sentence-BERT semantic risk, context consistency, IsolationForest behavioral trust, dynamic trust scoring (`T = ws*(1-Rs) + wc*Rc + wb*Rb`), autonomy-mode capability enforcement, output protection, memory integrity, and hash-chained tamper-evident audit logging;
+- config-switchable capability execution (`trust_boundary/capability_enforcement.py`): `SimulatedExecutor` (default, logs "would execute") or `ProductionExecutor` (real OS-level actions - Linux `nftables`/`iptables`, Windows `netsh advfirewall`), selected via `trust_boundary.executor.mode`, see "Real response execution" above;
+- analyst feedback loop (`analytics/trust_labels.py`, `analytics/threshold_validation.py`): human-labeled ground truth on past trust decisions, referenced by audit-log sequence, hash-chained - see "Analyst feedback loop" above;
 - Phase II analytics (`analytics/`): trust forecasting, agent reputation, Page-Hinkley concept-drift detection, SHAP/LIME explainability, KPI aggregation, and a feedback loop, plus `scripts/generate_security_dashboard.py`;
 - Streaming feature pipeline (`streaming/`): `CsvReplaySource` -> `StreamingFeatureExtractor` -> `StreamingIDS`, verifying the certified model (`verify_release`) before loading, closing the full loop end to end via `scripts/run_streaming_demo.py`: replay -> IDS inference -> Threat Context Generator -> Agentic Decision Engine -> Trust Boundary -> gated action execution -> audit log;
+- live PCAP-paced multi-source streaming and attack-scenario simulation (`streaming/live_source.py`, `streaming/scenario.py`, `scripts/run_attack_scenario.py`), see "Live attack-scenario streaming" above;
 - deployment-mode TLS + SuperNode auth (`security/certificates.py`, see above);
 - tests across the model, integrity, trust-boundary, analytics, certification, and streaming packages.
 
