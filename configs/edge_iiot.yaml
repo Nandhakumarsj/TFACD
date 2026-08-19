@@ -92,10 +92,19 @@ agentic:
     # agentic/factory.py::build_decision_engine, which refuses to construct it
     # without a passing artifacts/agentic/llm_benchmark_report.json.
     engine: "template"
-    fallback_engine: "template"
   llm:
     provider: "ollama"
     model: "qwen3:8b"
+    # Optional second Ollama model, tried only if `model` errors out or
+    # exhausts its retries in the same reason/validate/retry graph - a
+    # MODEL-level fallback, distinct from fallback_engine below (which is the
+    # ENGINE-level fallback: llm -> deterministic template). null = today's
+    # single-model behavior, unchanged. Both models must support Ollama
+    # tool-calling (structured_output_method: "function_calling") - this is
+    # not a json_mode escape hatch. Only wired in if its own entry in the
+    # benchmark report (scripts/run_llm_engine_benchmark.py --fallback-model)
+    # says go=true - see agentic/factory.py.
+    fallback_model: null
     base_url: "http://localhost:11434"
     temperature: 0.0
     # 4096, not 8192: measured on this workstation's 8GB P4000, a real decision
@@ -129,6 +138,24 @@ trust_boundary:
   # Smooths behavioral trust across repeated interactions, same idiom as
   # PCAClusterEMAFilter.ema_alpha in the FTIL layer.
   ema_alpha: 0.3
+  executor:
+    # "simulate" (default) - SimulatedExecutor, today's only behavior: logs
+    # "would execute", takes no real action. "production" - ProductionExecutor
+    # (trust_boundary/production_executor.py): real OS firewall commands for
+    # block_source/isolate_segment/rate_limit (Linux nftables primary,
+    # iptables fallback, Windows netsh advfirewall - rate_limit has no
+    # Windows backend and falls back to simulated for that one capability),
+    # a real persisted log for rotate_session and the low-risk capabilities.
+    # Non-negotiable per explicit instruction that this switch must exist -
+    # "simulate" stays the safe default everywhere it isn't explicitly
+    # overridden to "production".
+    mode: "simulate"
+    # Hard rail checked BEFORE any real command is built, independent of and
+    # in addition to the trust boundary's own whitelist/autonomy-mode checks.
+    # Defaults (loopback + link-local) are a sane minimum, not a complete
+    # safety net - add your real management/gateway addresses here before
+    # ever setting mode: "production" on a real network.
+    protected_targets: ["127.0.0.1/32", "169.254.0.0/16", "::1/128"]
 
 streaming:
   model_path: "artifacts/models/flower_ftil_final.pt"

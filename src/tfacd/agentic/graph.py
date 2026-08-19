@@ -42,6 +42,10 @@ confidence, severity, repeat activity if present) - a generic or off-topic ratio
 scored independently and will reduce this plan's trust.
 - Set confidence to your own calibrated confidence in this specific plan, not a copy of \
 the detector's confidence.
+- Set each action's target correctly: for an action that acts on the attacker (e.g. \
+block_source, rate_limit), target must be source_id - the attacker's address. For an \
+action that protects the asset instead (e.g. isolate_segment), target must be \
+target_asset. Getting this backwards means the wrong address gets acted on.
 
 Respond only with the requested structured output."""
 

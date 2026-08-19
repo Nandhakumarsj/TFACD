@@ -8,9 +8,7 @@ scripts/generate_security_dashboard.py / analytics/kpi.py can read directly.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 from sklearn.metrics import classification_report
@@ -19,14 +17,15 @@ from tfacd.agentic.factory import build_decision_engine
 from tfacd.agentic.history import EntityHistory
 from tfacd.common.config import load_config
 from tfacd.data.preprocess import heldout_indices
-from tfacd.runtime.contracts import SessionContext
 from tfacd.runtime.threat_context import ThreatContextGenerator
+from tfacd.streaming.incident_runner import run_incident
 from tfacd.streaming.pipeline import StreamingIDS
 from tfacd.streaming.sources import CsvReplaySource, InMemorySource
 from tfacd.trust_boundary.audit import AuditLogger
 from tfacd.trust_boundary.behavioral_trust import BehavioralTrustEngine
 from tfacd.trust_boundary.boundary import AdaptiveSemanticTrustBoundary
 from tfacd.trust_boundary.dynamic_trust import DynamicTrustScoreRegulator
+from tfacd.trust_boundary.executor_factory import build_executor
 from tfacd.trust_boundary.semantic_risk import SemanticRiskEngine
 
 parser = argparse.ArgumentParser()
@@ -107,6 +106,10 @@ threat_context_generator = ThreatContextGenerator(
     config["runtime"]["threat_context_mapping"], known_classes=ids.classes,
 )
 decision_engine = build_decision_engine(config, history)
+executor = build_executor(config)
+if executor.mode == "production":
+    print("*** trust_boundary.executor.mode=\"production\": REAL response actions will be taken (see "
+          "trust_boundary/production_executor.py) - not simulated. ***")
 boundary = AdaptiveSemanticTrustBoundary(
     history=history,
     policy=policy,
@@ -117,20 +120,14 @@ boundary = AdaptiveSemanticTrustBoundary(
     semantic_risk_engine=SemanticRiskEngine(model_name=tb_config["sbert_model_name"]),
     behavioral_trust_engine=BehavioralTrustEngine(high_risk_capabilities=set(policy["capability_whitelist"]["high_risk"]), ema_alpha=tb_config["ema_alpha"]),
     audit_logger=AuditLogger(Path("artifacts/streaming/audit_log.jsonl")),
+    executor=executor,
 )
 
 print()
 for alert in incidents:
-    context = threat_context_generator.enrich(alert)
-    plan = decision_engine.decide(alert, context)
-    # A fresh session per incident, not one shared session for the whole run:
-    # session_max_age_seconds=300 would otherwise expire mid-replay, and a new
-    # nonce per plan is semantically correct for a live IDS-driven agent anyway.
-    # uuid4(), not id(alert) - object identity isn't a real uniqueness guarantee
-    # (and history is persisted across script runs, so a collision-prone nonce
-    # risks the same false-replay-rejection found in run_trust_boundary_demo.py).
-    session = SessionContext(agent_id="streaming_ids_v1", session_id=f"session-{alert.attack_type}", issued_at=datetime.now(timezone.utc), nonce=uuid4().hex)
-    decision = boundary.evaluate(plan, context, session)
+    context, decision = run_incident(
+        alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="streaming_ids_v1",
+    )
     print(
         f"{alert.attack_type:<22} confidence={alert.confidence:.3f} severity={context.severity:<13} "
         f"trust_level={decision.trust_level} executed={decision.executed_actions}"

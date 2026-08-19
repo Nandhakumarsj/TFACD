@@ -76,6 +76,13 @@ class TrustDecision(BaseModel):
     executed_actions: list[str] = []
     rationale: str
     engine: str = "template"
+    # Which CapabilityExecutor ran executed_actions - "simulate" (SimulatedExecutor,
+    # today's only executor) or "production" (ProductionExecutor, a real
+    # deployment-specific backend). None when capability_enforcement never ran
+    # (an earlier stage already rejected the plan), same convention as
+    # trust_level/autonomy_mode/scores above. Provenance, not itself a security
+    # control - same posture as `engine`.
+    executor_mode: Literal["simulate", "production"] | None = None
 
 
 class AuditEntry(BaseModel):

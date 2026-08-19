@@ -18,6 +18,8 @@ class SimulatedExecutor:
     extension point, not something this repo pretends to have.
     """
 
+    mode = "simulate"
+
     def execute(self, action: CyberAction) -> bool:
         logger.info("would execute: capability=%s target=%s params=%s", action.capability, action.target, action.parameters)
         return True

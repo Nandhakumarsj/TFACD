@@ -1,21 +1,35 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 
+def _restrict_to_owner(path: Path) -> None:
+    """Best-effort owner-only permissions - see security/certificates.py's
+    identical helper for why this is a no-op-beyond-read-only on Windows but
+    real protection on this project's actual Linux IIoT deployment target."""
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def generate_keypair(private_path: str | Path, public_path: str | Path) -> None:
     private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
-    Path(private_path).write_bytes(
+    private_path = Path(private_path)
+    private_path.write_bytes(
         private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
         )
     )
+    _restrict_to_owner(private_path)
     Path(public_path).write_bytes(
         public_key.public_bytes(
             encoding=serialization.Encoding.PEM,

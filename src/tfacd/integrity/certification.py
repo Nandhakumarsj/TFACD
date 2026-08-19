@@ -97,5 +97,13 @@ def verify_release(
             if not signature_ok:
                 reasons.append(f"signature verification failed against {signature}")
 
-    ok = status_ok and sha256_ok and signature_ok is not False
+    # signature_ok is None only when no check was performed at all (possible
+    # only when require_signature=False AND no .sig file exists - see the
+    # `if require_signature or signature.exists():` branch above). Spelled out
+    # explicitly here (rather than the previous `signature_ok is not False`,
+    # which passed None regardless of require_signature) so this stays correct
+    # even if that branch's logic changes later, instead of depending on an
+    # invariant the boolean check itself doesn't express.
+    signature_component_ok = signature_ok is True or (signature_ok is None and not require_signature)
+    ok = status_ok and sha256_ok and signature_component_ok
     return ReleaseVerification(ok, status_ok, sha256_ok, signature_ok, reasons)

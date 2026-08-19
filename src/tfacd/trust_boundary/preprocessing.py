@@ -127,5 +127,15 @@ def run(plan: CyberActionPlan, session: SessionContext, history: EntityHistory, 
     if recent_decisions >= quota:
         reasons.append(f"hourly action quota exceeded ({recent_decisions} >= {quota})")
 
-    normalized_plan = plan.model_copy(update={"actions": normalized_actions, "rationale": canonicalize(plan.rationale)})
+    # rationale gets the same obfuscation check as every string parameter above -
+    # it's free-text authored by the decision engine (an LLM, for the "llm"
+    # engine) and flows unchecked into semantic_risk.py's scoring and the audit
+    # log otherwise, making it the field most exposed to an obfuscated
+    # instruction-override payload.
+    canonical_rationale = canonicalize(plan.rationale)
+    obfuscated_rationale = _detect_obfuscation(canonical_rationale)
+    if obfuscated_rationale:
+        reasons.append(f"rationale {obfuscated_rationale}")
+
+    normalized_plan = plan.model_copy(update={"actions": normalized_actions, "rationale": canonical_rationale})
     return StageResult(stage="preprocessing", accepted=not reasons, reasons=reasons), normalized_plan

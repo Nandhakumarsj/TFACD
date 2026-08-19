@@ -6,6 +6,26 @@ from uuid import uuid4
 from tfacd.agentic.history import EntityHistory
 from tfacd.runtime.contracts import CyberAction, CyberActionPlan, IDSAlert, ThreatContext
 
+# Capabilities that act ON THE ATTACKER (block their traffic / throttle their
+# rate) need CyberAction.target = the attacker's address (alert.source_id).
+# Every other capability (isolate_segment protects the asset's segment,
+# rotate_session/low-risk actions are asset- or session-scoped, not attacker-
+# scoped) keeps target = alert.target_asset, today's existing behavior.
+# Concrete consequence of getting this wrong: SimulatedExecutor never cared
+# what `target` held (it only ever logged it), but trust_boundary/
+# production_executor.py's real block_source backend genuinely needs the
+# attacker's IP to build a correct firewall rule - before this, every
+# capability (including block_source) was handed target_asset (the PROTECTED
+# device), which would have blocked the wrong address.
+_SOURCE_TARGETED_CAPABILITIES = frozenset({"block_source", "rate_limit"})
+
+
+def _action_target(capability: str, alert: IDSAlert) -> str | None:
+    if capability in _SOURCE_TARGETED_CAPABILITIES:
+        return alert.source_id
+    return alert.target_asset
+
+
 # Filled with {attack_type}/{source_id}/{target_asset}/{playbooks} at decision time.
 # semantic_risk.py scores plan.rationale against the same templates, keyed by severity.
 RATIONALE_TEMPLATES = {
@@ -37,7 +57,7 @@ class AgenticDecisionEngine:
         repeat_activity = len(prior_incidents) > 0
 
         playbooks = list(context.allowed_playbooks)
-        actions = [CyberAction(capability=playbook, target=alert.target_asset, parameters={}) for playbook in playbooks]
+        actions = [CyberAction(capability=playbook, target=_action_target(playbook, alert), parameters={}) for playbook in playbooks]
 
         rationale = RATIONALE_TEMPLATES[context.severity].format(
             attack_type=alert.attack_type,

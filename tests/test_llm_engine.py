@@ -109,3 +109,49 @@ def test_hard_ceiling_never_crossed_even_when_llm_always_proposes_disallowed_cap
 
     assert all(a.capability in context.allowed_playbooks for a in plan.actions)
     assert "shutdown_plant" not in [a.capability for a in plan.actions]
+
+
+def test_primary_exhausted_retries_to_fallback_model_which_succeeds():
+    alert, context = make_context()
+    bad = LLMProposedPlan(rationale="x", actions=[LLMProposedAction(capability="shutdown_plant")], confidence=0.5)
+    good = LLMProposedPlan(rationale="fallback model succeeded", actions=[LLMProposedAction(capability="block_source")], confidence=0.7)
+
+    engine = LLMDecisionEngine(
+        _FakeChatModel([bad, bad]),
+        fallback_chat_model=_FakeChatModel([good]),
+        history=EntityHistory(),
+        max_attempts=2,
+    )
+
+    plan = engine.decide(alert, context)
+
+    assert plan.engine == "llm:fallback_model"
+    assert [a.capability for a in plan.actions] == ["block_source"]
+
+
+def test_both_primary_and_fallback_model_fail_drops_to_deterministic_engine():
+    alert, context = make_context()
+    bad = LLMProposedPlan(rationale="x", actions=[LLMProposedAction(capability="shutdown_plant")], confidence=0.5)
+
+    engine = LLMDecisionEngine(
+        _FakeChatModel([bad, bad]),
+        fallback_chat_model=_FakeChatModel([bad, bad]),
+        history=EntityHistory(),
+        max_attempts=2,
+    )
+
+    plan = engine.decide(alert, context)
+
+    assert plan.engine.startswith("fallback:")
+    assert "primary:" in plan.engine
+    assert "fallback_model:" in plan.engine
+
+
+def test_no_fallback_model_configured_behaves_exactly_as_before():
+    alert, context = make_context()
+    proposal = LLMProposedPlan(rationale="ok", actions=[LLMProposedAction(capability="block_source")], confidence=0.8)
+    engine = LLMDecisionEngine(_FakeChatModel([proposal]), history=EntityHistory())
+
+    assert engine._fallback_model_graph is None
+    plan = engine.decide(alert, context)
+    assert plan.engine == "llm"
