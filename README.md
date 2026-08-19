@@ -1,0 +1,268 @@
+# TFACD Phase-I Starter
+
+**Trustworthy Federated Agentic Cyber Defense for IIoT**
+
+This repository starts with the **training plane** and leaves stable interfaces for the runtime plane.
+
+## Development order
+
+1. Inspect the local Edge-IIoTset CSV and freeze its schema.
+2. Build a leakage-safe centralized baseline.
+3. Create IID and non-IID client partitions.
+4. Run Flower FedAvg/FedProx simulations.
+5. Add the Federated Trust & Integrity Layer (FTIL):
+   - structural update validation;
+   - FedDMC-inspired PCA + clustering baseline;
+   - historical EMA client trust;
+   - robust aggregation comparisons;
+   - hash/signature-based certified model release.
+6. Only then connect the certified model to the runtime plane.
+
+## Important scientific constraint
+
+A CNN-BiLSTM only has a meaningful temporal interpretation when row order, timestamps, or flow/session grouping are preserved. The selected DNN CSV may be shuffled. Run the inspector first. If no defensible ordering exists, use `sequence_length: 1` as the baseline and do not claim temporal learning until packet/flow ordering is reconstructed.
+
+## Windows + Quadro P5000
+
+The Quadro P5000 is a Pascal GPU. CUDA 13 removed Pascal library/offline compilation support, so install a **PyTorch CUDA 12.6 wheel**, even though `nvidia-smi` reports driver CUDA 13 capability.
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+# Install PyTorch from the cu126 index selected from pytorch.org
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install -e ".[dev,flower,agentic-llm]"
+python scripts/check_environment.py
+```
+
+`nvidia-smi` reports the maximum CUDA version supported by the driver; it does not require your Python package to use CUDA 13.
+
+## Put the dataset outside Git
+
+Edit `configs/edge_iiot.yaml`:
+
+```yaml
+data:
+  raw_csv: "./datasets/Edge-IIoT/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
+```
+
+Then:
+
+```powershell
+python scripts/inspect_dataset.py --config configs/edge_iiot.yaml
+python scripts/preprocess_dataset.py --config configs/edge_iiot.yaml
+python scripts/train_centralized.py --config configs/edge_iiot.yaml
+python scripts/create_partitions.py --config configs/edge_iiot.yaml
+```
+
+After the centralized baseline succeeds:
+
+```powershell
+flwr run . --stream
+```
+
+This produces `artifacts/models/flower_ftil_final.pt` and, when `use-ftil` is enabled (the default), `artifacts/models/ftil_trust_log.jsonl` - one JSON line per round recording each client's clustering-based accept/reject decision, EMA-smoothed personalized trust score, and continuous out-of-distribution (OOD) score, plus which clustering technique produced them. Read it with:
+
+```powershell
+python scripts/summarize_ftil_trust_log.py
+```
+
+which prints a per-round table (cluster method, PCA explained variance, silhouette, accepted/rejected/max-OOD) and a per-client trust trajectory. See "Federated Trust & Integrity Layer metrics" below for what each signal actually measures.
+
+**A full command-by-command reference for every stage and intermediate artifact, including the scripts not covered above (Gate 4's attack benchmark, certification, checkpoint evaluation, the dashboard) is in [docs/pipeline_runbook.md](docs/pipeline_runbook.md).**
+
+## Federated Trust & Integrity Layer metrics
+
+`integrity/detector.py::PCAClusterEMAFilter.detect()` returns three distinct per-client signals - they answer different questions, and reporting one in place of another overstates what was measured:
+
+- **`trust_scores`** (0..1) - EMA-smoothed personalized client trust, the only one of the three that carries across rounds. Gate 4 measured that a single bad round does not sink a client here by design (needs several consistent rounds to cross `reject_below_trust`), which is why robust aggregation (`trimmed_mean`) is kept as defense-in-depth rather than relying on this alone.
+- **`ood_scores`** (>=0, unbounded) - this round's distance from the cohort's robust center in PCA space, as a multiple of the cohort's *median* distance (1.0 = typical, 2.0 = twice as far out as the median client). Memoryless and continuous, so it still ranks clients even when clustering collapses everyone into one bucket - which is exactly when `round_scores`/`trust_scores` alone convey nothing. Reported as `0.0` for a degenerate cohort (all-identical updates, e.g. late in convergence) rather than dividing by a ~zero distance.
+- **`metrics`** (`DetectionMetrics`) - which clustering technique produced the round's decision (`cluster_method`: `"agglomerative"` or `"dbscan"`, or `"none:too-few-clients"` when fewer than 3 clients participate and clustering is skipped entirely), PCA explained variance ratio, silhouette score (`None` when not defined - DBSCAN can legitimately produce a single label), and whether the "too few clients flagged benign" distance-fallback path fired.
+
+All three are persisted every round in `ftil_trust_log.jsonl` and surfaced in the live Flower run's `MetricRecord` (`ftil_explained_variance_ratio`, `ftil_silhouette`, `ftil_max_ood_score` - `cluster_method` itself is a string and Flower's `MetricRecord` only accepts numeric/list-numeric values, so it stays in the JSONL log rather than the per-round Flower metrics).
+
+## Deployment-mode TLS (optional, not the default path)
+
+Every command above uses Flower's local-simulation engine (single process, no real network sockets) - there is nothing to encrypt there. `scripts/run_deployment_smoke_test.ps1` is a separate, real verification path: it starts an actual `flower-superlink` + two `flower-supernode` processes as distinct OS processes talking over real TLS-encrypted sockets on `127.0.0.1`, and submits a live training round against them.
+
+This is **not** "mTLS" - `flower-supernode --root-certificates`'s own docstring says "This is NOT a client certificate for mTLS." What's actually running is server-authenticated TLS (a local CA + SuperLink server certificate, `src/tfacd/security/certificates.py`) plus a separate SuperNode public-key node-authentication mechanism (EC/OpenSSH keypairs - **not** this repo's Ed25519 model-signing format, Flower requires a different key shape for node auth). Simulation stays the default day-to-day path; this is an alternate, tested one.
+
+```powershell
+python scripts/generate_deployment_certs.py    # CA + server cert, SuperNode auth keypairs -> artifacts/certs/
+./scripts/run_deployment_smoke_test.ps1         # starts the processes, registers nodes, submits a real run, tears everything down
+```
+
+Manual sequence, if reproducing by hand: generate certs -> start `flower-superlink --ssl-certfile ... --ssl-keyfile ... --ssl-ca-certfile ... --enable-supernode-auth` -> `flwr supernode register <pubkey> local-tls` per node (returns a `node_id`, requires the SuperLink already running) -> start each `flower-supernode --auth-supernode-private-key ... --root-certificates ... --superlink 127.0.0.1:9092 --clientappio-api-address 127.0.0.1:909<N>` (each SuperNode needs a distinct ClientAppIo port when running more than one on the same machine) -> `flwr run . local-tls --stream` (the SuperLink connection is a *positional* argument, not `--federation` - that flag is for Flower's hosted/cloud federation IDs in `@account/name` form, unrelated to selecting a local connection).
+
+## LLM-backed Agentic Decision Engine (optional, not the default path)
+
+Two decision engines exist, selected by `agentic.decision_engine.engine` in `configs/edge_iiot.yaml`:
+
+- **`"template"`** (`agentic/decision_engine.py`) - deterministic. Proposes every playbook `threat_context.yaml` allows for that severity and fills one of five rationale templates. Fully reproducible; no external service.
+- **`"llm"`** (`agentic/llm_engine.py` + `agentic/graph.py`) - a LangGraph reason -> validate -> retry loop over a local Ollama model. It reads the threat context and **selects a reasoned subset** of the allowed playbooks with a rationale grounded in the specific evidence.
+
+Both satisfy the same `DecisionEngine` protocol (`agentic/base.py`) and produce a `CyberActionPlan` that goes through the **same unmodified Adaptive Semantic Trust Boundary**. The trust boundary has no idea which engine produced a plan - that separation is the point: the LLM proposes, the boundary decides.
+
+```powershell
+# 1. Install Ollama and pull a model (verify the size ollama itself reports; do not trust a number here)
+winget install --id Ollama.Ollama
+ollama pull qwen3:8b
+# or, the best-measured option on this project's hardware (see the comparison table below):
+ollama pull gemma3:4b
+
+# 2. Install the optional dependency group
+pip install -e ".[agentic-llm]"
+
+# 3. REQUIRED: pass the benchmark gate before the engine can be used at all
+python scripts/run_llm_engine_benchmark.py --model qwen3:8b
+# gemma3:4b does not support Ollama tool-calling - it MUST use json_mode, or the gate fails outright:
+python scripts/run_llm_engine_benchmark.py --model gemma3:4b --structured-output-method json_mode
+
+# 4. Only then set agentic.decision_engine.engine: "llm" in configs/edge_iiot.yaml
+#    (and agentic.llm.structured_output_method: "json_mode" if using gemma3:4b)
+python scripts/run_streaming_demo.py
+```
+
+**The benchmark gate is a real precondition, not advice.** `agentic/factory.py::build_decision_engine` reads `artifacts/agentic/llm_benchmark_report.json` and refuses to construct the LLM engine unless it says `go: true` - the same "verify before load" discipline `verify_release()` applies to the certified checkpoint. It measures VRAM delta (via `nvidia-smi`, since Ollama runs as its own process and `torch.cuda.memory_allocated()` cannot see it), tokens/sec, p50/p95 latency, and JSON-schema validity both raw and after retry, across one representative alert per real attack class.
+
+Measured on this project's actual workstation (Quadro P4000, 8GB, Pascal - **no tensor cores**), `qwen3:8b` at `num_ctx: 4096`:
+
+| metric | measured | threshold |
+|---|---|---|
+| VRAM delta | 5476 MB | <= 85% of free VRAM at load time |
+| tokens/sec | 22.1 | >= 5 |
+| latency p50 / p95 | 29.8s / 39.5s | p95 <= 60s |
+| schema validity (raw / after retry) | 1.00 / 1.00 | >= 0.80 / >= 0.95 |
+
+### Running on a different GPU (e.g. Quadro P5000, 16GB)
+
+`scripts/run_llm_engine_benchmark.py` auto-detects the installed card's total VRAM via `nvidia-smi` (`agentic/benchmark.py::nvidia_smi_total_vram_mb`) - it is not hardcoded to this project's 8GB P4000, and needs no config change to run on a different card. Pass `--total-vram-mb` only to override detection.
+
+**This project's own workstation has a P4000, not a P5000 - the numbers below are an extrapolation from the measured P4000 behavior, not a measurement.** Re-run `scripts/run_llm_engine_benchmark.py` on the actual card and trust that report over this table.
+
+The P4000 and P5000 are the same Pascal generation (no tensor cores either way) - the P5000 has ~43% more CUDA cores (2560 vs 1792), ~19% more memory bandwidth (288 vs 243 GB/s), and double the VRAM (16GB vs 8GB). Expect noticeably lower latency and much more VRAM headroom, not a different architecture-level tradeoff:
+
+| setting | this project's P4000 (measured) | a P5000, extrapolated (unmeasured) |
+|---|---|---|
+| `agentic.llm.num_ctx` | `4096` (VRAM-constrained) | `8192`+ is affordable - 16GB has ~3x the headroom this model needs |
+| `agentic.llm.model` | `qwen3:8b` | `qwen3:8b` still fits easily; `qwen3:14b` (~9-10GB Q4) becomes viable and is worth benchmarking for quality |
+| VRAM gate | passes at 5476MB/8192MB (67%) | expect well under the 85% safety margin even with a larger model |
+| latency | p50 29.8s / p95 39.5s | likely lower given more cores/bandwidth, but not measured - do not assume a specific number |
+
+### Research honesty
+
+- **The latency ceiling was revised after measuring, and that is recorded rather than hidden.** It started at 30s (an unmeasured guess) and was raised to 60s once the real p95 came in at ~40s. It is still a real gate - a model 50% slower than what was measured fails it. `~40s/decision` bounds a `max_incidents: 10` run at 5-7 minutes of LLM time, against an IDS stage that scores 20,000 records in 14s. The LLM is deliberately nowhere near that hot path.
+- **`num_ctx: 4096`, not 8192** - a real decision uses ~534 prompt + ~703 output tokens, and halving the context window cut VRAM 6041MB -> 5438MB. That was the difference between failing and passing the VRAM check: an engineering fix, not a relaxed threshold.
+- **Smaller is not automatically better, and it depends entirely on the model family.** All three measured on this box, official `run_llm_engine_benchmark.py` reports (git-ignored, re-run rather than trusting this table):
+
+  | model | structured_output_method | VRAM delta | tokens/sec | p50 / p95 latency | raw / retry validity | go |
+  |---|---|---|---|---|---|---|
+  | `qwen3:8b` | `function_calling` | 5476 MB | 22.1 | 29.8s / 39.5s | 1.00 / 1.00 | **yes** |
+  | `qwen3:4b` | `function_calling` | 2984 MB | 33.8 | 91.3s / 223.5s | 0.73 / 0.93 | no |
+  | `gemma3:4b` | `json_mode` | **3733 MB** | **34.2** | **5.9s / 14.7s** | 0.87 / 1.00 | **yes** |
+
+  `qwen3:4b` fails on latency and validity despite lower VRAM and comparable raw tokens/sec to `gemma3:4b` - it emitted far more tokens per decision (thinking-mode-style verbosity) and burned retries. A conciseness-directive system prompt and Qwen's `/no_think` marker were both tried against it directly (not through the benchmark gate) and made things *worse*, not better - both variants failed to parse where the unmodified baseline had succeeded on the same sample. This looks like a property of the model at this size, not something prompting fixes.
+
+  `gemma3:4b` cannot use the default `function_calling` method at all - Ollama returns `registry.ollama.ai/library/gemma3:4b does not support tools (status code: 400)`, a hard capability gap, not a reliability problem. Under `agentic.llm.structured_output_method: "json_mode"` (schema spelled out in the prompt text instead of via tool-calling metadata - `agentic/graph.py::build_system_prompt`, `ChatOllama(format="json")`) it passes cleanly with the best numbers of any model tested on this hardware: smallest VRAM footprint, highest throughput, and by far the lowest latency. If reproducing this benchmark, try `gemma3:4b` with `json_mode` before assuming a larger model is necessary.
+- **Switching engines changes the trust scores, and that is the finding, not a regression.** On the same 10 replayed incidents, the template engine reached `verified` trust and executed all 4 playbooks; the LLM engine reached `high`/`medium` and executed fewer. The cause is measurable: the template engine scores `Rs = 0.000` because `semantic_risk.py` compares a plan's rationale against the very template that produced it, and `Rc = 1.000` because the plan copies `alert.confidence` verbatim into `plan.confidence`, which is exactly what `context_consistency.py` checks alignment against. **Both signals were tautological while the deterministic engine was the only plan producer.** An LLM-authored plan (`Rs = 0.17-0.19`, `Rc = 0.85`) is the first real measurement either has produced here: the rationale is independently written, and the model sets its own calibrated confidence (0.65 against a detector that was only 0.343 confident). The resulting discount is defensible security behavior - an agent whose claims outrun its evidence *should* score lower - but it is a trust *floor* comparison, not an apples-to-apples one, and any evaluation that reports both engines' trust values side by side must say so.
+- **Non-determinism.** Even at `temperature: 0.0`, GPU kernel scheduling and batching make local inference not bit-for-bit reproducible run to run. This is why the deterministic engine is kept as a selectable peer, not deleted - it is the reproducible baseline. Published Qwen3 benchmarks are for full-precision weights; these are Q4_K_M quantized.
+- **The `engine` field is provenance, not a security control.** Every `CyberActionPlan` and `TrustDecision` carries `engine` (`"template"`, `"llm"`, or `"fallback:<reason>"`), so the audit log distinguishes an LLM-authored decision from one the fallback produced. It is unsigned metadata - a workflow/audit aid, not tamper protection.
+- **The LLM can only ever narrow, never widen.** It selects from `context.allowed_playbooks` and nothing else; `trust_boundary/deterministic_controls.py` re-checks that independently, and `capability_enforcement.py` re-checks the whitelist again immediately before execution. If the model proposes an unlisted capability, the graph retries with the error, then falls back to the deterministic engine - so a plan that leaves this engine is never less constrained than one the template engine would have produced. Note the corollary: a playbook the model declines to propose can never execute later, even at high trust.
+- **Qwen3's context is 32K natively**, not 128K - 128K requires YaRN extension, which Qwen's own documentation advises against enabling unless genuinely needed.
+- RAG over a security corpus and the "with-vs-without ASTB" comparison experiment are **not implemented** and are deliberately out of scope for this pass.
+
+## Known gaps (2026-08-13 architecture audit, closed out 2026-08-14)
+
+A structured audit (six dimensions, every "bug"/"gap" claim independently adversarially re-verified against the actual code before being recorded - all survived re-verification) found the items below. All but one are now fixed; the remainder is a genuine research limitation, not a patchable bug.
+
+**Fixed:**
+- `training.class_weighting: true` was applied in the centralized baseline but silently dropped in the federated path (`federated/client_app.py` built an unweighted `CrossEntropyLoss()` regardless of config). Fixed: each client now weights by its own local partition's class distribution (not the global one) via `_weighted_criterion()`.
+- `IDSAlert.source_id`/`target_asset` flowed unsanitized into the LLM decision engine's prompt and into `semantic_risk.py`'s scoring - an unmitigated prompt-injection surface. Fixed at the source: `streaming/pipeline.py::_alert_for` now canonicalizes both fields (Unicode NFKC + zero-width stripping) before constructing the alert.
+- **Nonce replay** - `preprocessing.py` now rejects a reused `(agent_id, nonce)` pair within the session freshness window, backed by a new `EntityHistory` event kind. Fixing this surfaced a real second bug: `agentic/synthetic.py` and both demo scripts previously reused a single nonce across multiple real `evaluate()` calls (harmless before the check existed, a hard rejection after) - all three now mint a genuinely unique nonce (`uuid4()`) per call, not one derived from a fixed name/index that would collide with the *same script's own prior run* against its persisted history file.
+- **Leetspeak detection** - `preprocessing.py` now flags a substitution-hidden dangerous keyword (`"1gn0r3"` → `"ignore"`) via a narrow, keyword-anchored de-leet check, deliberately not a general "any digit near a letter" heuristic (verified empirically against device names like `"gateway-01"` and `"vlan10"` - no false positives).
+- **`dirichlet_partition`'s per-class blind spot** - a new opt-in `min_class_samples` guard (wired into `create_partitions.py` at `min_class_samples_per_client: 1`) requires every client to see at least that many examples of every class. Verified against the real dataset: the exact alpha/seed combination that previously dropped Fingerprinting to 0 samples on two clients now guarantees ≥1 everywhere.
+- **`federated/loaders.py` redundant I/O** - `client_loaders()` now caches the decompressed `prepared.npz` (`functools.lru_cache`, keyed on `output_dir`) instead of reloading it on every Flower message.
+- **`capability_enforcement.enforce()`'s incomplete re-check** - now takes `context: ThreatContext` and re-verifies `context.allowed_playbooks` immediately before execution, not just the static whitelist.
+- **Semantic Risk TF-IDF fallback's spurious penalty** - vocabulary is now enriched from `threat_context.yaml`'s 15 real classes (both identifier-style and natural-language-phrased renderings, since a real LLM never writes the literal capability string `block_source`). Corpus tuning alone wasn't enough on its own to fully close the gap (word-choice variance is a structural bag-of-words limitation, not a fittable vocabulary problem) - the actual fix is a targeted floor: if the rationale names the real attack type, the TF-IDF-derived risk is capped at a moderate ceiling rather than left to fall wherever word overlap happens to land. Verified this floor does *not* rescue a rationale naming the *wrong* attack type.
+- **Behavioral Trust Engine now adapts** - `BehavioralTrustEngine.refit_from_history()` reconstructs real observed feature vectors from `EntityHistory`'s stored `trust_decision` events (exact reconstruction of `high_risk_fraction`/`action_count` from stored capabilities, exact retrospective replay of the 1-hour `violation_rate`/`recent_event_count` window) and refits the IsolationForest once ≥20 real samples exist. Exposed via `scripts/refit_behavioral_trust.py` - deliberately not auto-wired into the live pipeline (no persistence path exists for the refit forest; this is an operator-run diagnostic, same posture as `run_threshold_optimizer.py`).
+- **5 of 7 Phase II analytics modules had no script entry point** - now all 7 do: `scripts/run_trust_forecast.py`, `scripts/run_drift_report.py`, `scripts/run_reputation_report.py`, `scripts/run_explainability_report.py` join the pre-existing threshold-optimizer and KPI-dashboard scripts. All four verified against real accumulated history in this repo, producing genuinely sensible output (e.g. the reputation ranking correctly places `agent-well_behaved` first and `agent-risky` last).
+
+**Not fixed - a research limitation, not a bug:** no script validates `trust_level_thresholds` (0.40/0.65/0.85) against real labeled outcomes. This can't be patched the way the items above could: `feedback_loop.py`'s own docstring explains why - no ground truth exists anywhere for "this trust decision was actually wrong" (unlike the FL-side detector, which Gate 4's labeled attack benchmark *can* validate against). Closing this would require building an analyst-feedback labeling mechanism first, a separate, larger scope than a fix.
+
+**Not yet audited:** the end-to-end failure-mode trace (ingestion → feature extraction → model loading → FTIL aggregation → LLM decision engine → capability execution, stage by stage) was scoped but did not complete before the audit pass that found the items above hit a session usage limit.
+
+## What is implemented now
+
+**Training plane**
+
+- dataset schema inspection and leakage warnings;
+- mixed numeric/categorical preprocessing;
+- train-only fitting of encoders/scalers;
+- CNN-BiLSTM model for `[batch, sequence, features]` input;
+- centralized training/evaluation;
+- Dirichlet non-IID client partitioning;
+- Flower `ClientApp`/`ServerApp` (simulation and real deployment-mode TLS, see above);
+- structural update validation;
+- FedDMC-inspired PCA/clustering/EMA detector (explicitly not an exact reproduction);
+- weighted mean, coordinate median, and trimmed-mean aggregation utilities;
+- a certification state machine: `status: "trained-uncertified" -> "certified"` only via `scripts/certify_model.py --sign`, SHA-256 manifest + optional Ed25519 signature, `certification.verify_release()` as the single shared check used by both the CLI and the streaming loader.
+
+**Runtime plane**
+
+- Threat Context Generator (`runtime/threat_context.py`) mapping all 15 real model output classes to severity/priority/playbooks (`configs/threat_context.yaml`), with `strict`/`known_classes` warnings so an unmapped class is loud, not silent;
+- Agentic Decision Engine (`agentic/decision_engine.py`) turning a threat context into a bounded `CyberActionPlan`, with per-entity interaction history (`agentic/history.py`) - plus a config-selectable LLM-backed alternative (`agentic/llm_engine.py`, LangGraph + local Ollama) behind a real on-box benchmark gate, see above;
+- Adaptive Semantic Trust Boundary (`trust_boundary/`): preprocessing, deterministic controls, Sentence-BERT semantic risk, context consistency, IsolationForest behavioral trust, dynamic trust scoring (`T = ws*(1-Rs) + wc*Rc + wb*Rb`), autonomy-mode capability enforcement, output protection, memory integrity, and hash-chained tamper-evident audit logging;
+- Phase II analytics (`analytics/`): trust forecasting, agent reputation, Page-Hinkley concept-drift detection, SHAP/LIME explainability, KPI aggregation, and a feedback loop, plus `scripts/generate_security_dashboard.py`;
+- Streaming feature pipeline (`streaming/`): `CsvReplaySource` -> `StreamingFeatureExtractor` -> `StreamingIDS`, verifying the certified model (`verify_release`) before loading, closing the full loop end to end via `scripts/run_streaming_demo.py`: replay -> IDS inference -> Threat Context Generator -> Agentic Decision Engine -> Trust Boundary -> gated action execution -> audit log;
+- deployment-mode TLS + SuperNode auth (`security/certificates.py`, see above);
+- tests across the model, integrity, trust-boundary, analytics, certification, and streaming packages.
+
+## Initial experiment matrix
+
+| Experiment | Purpose |
+|---|---|
+| Centralized MLP | sanity baseline |
+| Centralized CNN-BiLSTM, sequence=1 | architecture baseline without temporal claim |
+| Centralized CNN-BiLSTM, sequence>1 | only after ordering audit |
+| Flower FedAvg IID | federation correctness |
+| Flower FedAvg Dirichlet non-IID | heterogeneity baseline |
+| Flower FedProx non-IID | heterogeneity comparison |
+| FedAvg under label-flip clients | poisoning baseline |
+| PCA-cluster-EMA filtering + FedAvg | FTIL baseline |
+| Coordinate median / trimmed mean | robust aggregation baselines |
+
+## Repository map
+
+```text
+tfacd_phase1_starter/
+├── configs/
+├── docs/
+├── scripts/
+├── src/tfacd/
+│   ├── common/
+│   ├── data/
+│   ├── models/
+│   ├── training/
+│   ├── federated/
+│   ├── integrity/
+│   ├── runtime/
+│   ├── agentic/
+│   ├── trust_boundary/
+│   ├── analytics/
+│   ├── security/
+│   └── streaming/
+├── tests/
+├── artifacts/             # generated, ignored
+├── pyproject.toml
+└── README.md
+```
+
+## Research honesty
+
+- `PCAClusterEMAFilter` is **inspired by** FedDMC's dimensionality reduction, clustering, and historical correction. It is not the paper's exact BTBCN implementation.
+- Cross-round FLTracer-like features are a later milestone after the baseline round history is stable.
+- Do not claim “Byzantine robust” unless at least one recognized robust strategy is benchmarked under defined malicious-client ratios.
+- TLS is tested after the local simulation works; it is a deployment control, not a replacement for malicious-update detection.
+- No live MQTT/Modbus/OPC-UA/SCADA broker exists in this project. `streaming/sources.py::CsvReplaySource` replays a static Edge-IIoTset capture through the same `RecordSource` protocol a real broker client would implement — the seam is deliberately documented, not hidden as if it were live traffic. `scripts/run_streaming_demo.py` defaults to replaying the exact held-out rows Gate 2/3 already scored offline (`heldout_indices`), so any deviation from the offline macro-F1 indicates a pipeline bug, not generalization; a `--all-rows` flag exists for arbitrary replay and prints a loud caveat that any accuracy shown then is not a generalization metric.
+- The diagram's "Flow Generation" / windowing box is deliberately **refused**, not stubbed: the Edge-IIoTset CSV is grouped into contiguous per-class blocks (confirmed by direct row inspection), so any `sequence_length > 1` window on this file would leak the label through row position. `streaming/pipeline.py::StreamingIDS` raises `NotImplementedError` on `sequence_length != 1` citing this finding rather than silently producing a temporally-flavored result the data cannot support.

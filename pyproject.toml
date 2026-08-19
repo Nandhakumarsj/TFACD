@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tfacd"
+version = "0.1.0"
+description = "Phase-I starter for trustworthy federated IIoT intrusion detection"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "numpy>=2.0,<3",
+  "pandas>=2.2,<3",
+  "scikit-learn>=1.5,<2",
+  "PyYAML>=6.0,<7",
+  "joblib>=1.4,<2",
+  "pydantic>=2.8,<3",
+  "rich>=13.7,<15",
+  "cryptography>=43,<47",
+  "sentence-transformers>=3,<4",
+]
+
+[project.optional-dependencies]
+flower = ["flwr[simulation]>=1.30,<1.31"]
+dev = ["pytest>=8,<10", "ruff>=0.8,<1", "mypy>=1.13,<2"]
+agentic-llm = ["langgraph>=0.2,<0.3", "langchain-core>=0.3,<0.4", "langchain-ollama>=0.2,<0.3"]
+
+[project.scripts]
+tfacd-inspect = "tfacd.data.inspect:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tfacd"]
+
+[tool.flwr.app]
+publisher = "nandhakumar"
+
+[tool.flwr.app.components]
+serverapp = "tfacd.federated.server_app:app"
+clientapp = "tfacd.federated.client_app:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 3
+fraction-train = 1.0
+fraction-evaluate = 1.0
+local-epochs = 1
+learning-rate = 0.001
+batch-size = 256
+config-path = "configs/edge_iiot.yaml"
+proximal-mu = 0.0
+use-ftil = true
+
+
+#######################################################################
+# CONFIGURATION MIGRATION NOTICE:
+#
+# What was previously called "federation config" for SuperLink
+# connections in pyproject.toml has been renamed and moved.
+#
+# These settings are now **SuperLink connection configuration**
+# and are defined in the Flower configuration file.
+#
+# The entries below are commented out intentionally and are kept
+# only as a migration reference.
+#
+# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
+#######################################################################
+
+# [tool.flwr.federations]
+# default = "local-simulation"
+
+# [tool.flwr.federations.local-simulation]
+# options.num-supernodes = 5
+# options.backend.client-resources.num-cpus = 1
+# options.backend.client-resources.num-gpus = 0.2
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

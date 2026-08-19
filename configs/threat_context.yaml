@@ -1,0 +1,130 @@
+# Deterministic mapping, one entry per real Edge-IIoTset DNN-dataset class
+# (verify against artifacts/data/metadata.json's "classes" list - all 15 must
+# be covered, see tests/test_threat_context.py::test_mapping_covers_model_classes).
+#
+# Assignment rubric (kept here so the mapping is auditable, not vibes):
+#   - Severity is assigned per Edge-IIoTset's own published attack family
+#     (DoS/DDoS, malware, MITM, injection/credential, info-gathering).
+#   - Priority: P1 = active impact or established adversary control;
+#     P2 = active intrusion/recon against a known target;
+#     P3 = passive/low-signal recon; P4 = no adversarial signal.
+#   - Every non-Normal entry includes at least one low_risk playbook (see
+#     trust_policy.yaml's capability_whitelist) alongside any high_risk ones:
+#     capability_enforcement.py only runs high_risk actions at the
+#     autonomous_execution autonomy mode, so a high_risk-only entry would
+#     produce containment with zero visibility at any lower trust level.
+#   - Every list is capped at 4 playbooks: trust_boundary's
+#     max_actions_per_plan is 5, and decision_engine.py emits one action per
+#     allowed playbook.
+#
+# MITRE ATT&CK technique IDs are deliberately left empty. A dataset class name
+# is not per-record evidence of a specific technique (e.g. "DDoS_TCP" alone
+# doesn't distinguish T1498 from T1499) - populating this field would be
+# exactly the kind of unverified claim this project's research-honesty
+# conventions forbid (see README's "Research honesty" section). Candidate IDs
+# are listed in comments only, explicitly marked unverified, for a human
+# reviewer to confirm against real incident evidence before ever promoting
+# them into the mapping itself.
+#
+# Judgment calls worth a second look rather than treated as settled:
+#   - isolate_segment on Ransomware/Backdoor/Uploading is itself a disruptive
+#     OT action (SimulatedExecutor never actually executes anything today,
+#     but the mapping still encodes the claim that segmentation is warranted).
+#   - XSS at medium could arguably be high if the target is an HMI rather than
+#     a generic web endpoint.
+#   - Fingerprinting (P3) vs Port_Scanning (P2) is a thin distinction.
+
+Normal:
+  severity: informational
+  priority: P4
+  mitre_techniques: []
+  allowed_playbooks: [observe, log_event]
+
+# DoS/DDoS family - candidate MITRE (unverified): T1498 (Network DoS), T1499 (Endpoint DoS)
+DDoS_UDP:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
+
+DDoS_ICMP:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
+
+DDoS_TCP:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
+
+DDoS_HTTP:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
+
+# Malware family - candidate MITRE (unverified): T1486 (Data Encrypted for Impact), T1595 (Active Scanning / staging)
+Ransomware:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [isolate_segment, block_source, start_capture, notify_soc]
+
+Backdoor:
+  severity: critical
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [isolate_segment, block_source, start_capture, notify_soc]
+
+# MITM family - candidate MITRE (unverified): T1557 (Adversary-in-the-Middle)
+MITM:
+  severity: high
+  priority: P1
+  mitre_techniques: []
+  allowed_playbooks: [isolate_segment, rotate_session, start_capture, notify_soc]
+
+# Injection/credential family - candidate MITRE (unverified): T1110 (Brute Force), T1190 (Exploit Public-Facing Application)
+Password:
+  severity: high
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [rate_limit, rotate_session, increase_logging, notify_soc]
+
+SQL_injection:
+  severity: high
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [block_source, start_capture, increase_logging, create_ticket]
+
+Uploading:
+  severity: high
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [isolate_segment, start_capture, increase_logging, notify_soc]
+
+XSS:
+  severity: medium
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [block_source, increase_logging, create_ticket]
+
+# Info-gathering family - candidate MITRE (unverified): T1595 (Active Scanning)
+Vulnerability_scanner:
+  severity: medium
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [block_source, increase_logging, create_ticket]
+
+Port_Scanning:
+  severity: medium
+  priority: P2
+  mitre_techniques: []
+  allowed_playbooks: [block_source, increase_logging, create_ticket]
+
+Fingerprinting:
+  severity: low
+  priority: P3
+  mitre_techniques: []
+  allowed_playbooks: [increase_logging, log_event, create_ticket]

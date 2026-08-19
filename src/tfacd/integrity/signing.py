@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
+
+def generate_keypair(private_path: str | Path, public_path: str | Path) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    Path(private_path).write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    Path(public_path).write_bytes(
+        public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+
+
+def sign_file(path: str | Path, private_key_path: str | Path, signature_path: str | Path) -> None:
+    private_key = serialization.load_pem_private_key(Path(private_key_path).read_bytes(), password=None)
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise TypeError("Expected an Ed25519 private key")
+    Path(signature_path).write_bytes(private_key.sign(Path(path).read_bytes()))
+
+
+def verify_file(path: str | Path, public_key_path: str | Path, signature_path: str | Path) -> bool:
+    public_key = serialization.load_pem_public_key(Path(public_key_path).read_bytes())
+    if not isinstance(public_key, Ed25519PublicKey):
+        raise TypeError("Expected an Ed25519 public key")
+    try:
+        public_key.verify(Path(signature_path).read_bytes(), Path(path).read_bytes())
+        return True
+    except Exception:
+        return False
