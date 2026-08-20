@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
-from tfacd.agentic.decision_engine import AgenticDecisionEngine
+from tfacd.agentic.factory import build_decision_engine
 from tfacd.agentic.history import EntityHistory
 from tfacd.agentic.synthetic import simulate_agent_population
 from tfacd.common.config import load_config
@@ -26,7 +27,7 @@ policy = load_config(config["runtime"]["trust_policy_path"])
 
 history = EntityHistory(persist_path=Path("artifacts/agentic/history.jsonl"))
 threat_context_generator = ThreatContextGenerator(config["runtime"]["threat_context_mapping"])
-decision_engine = AgenticDecisionEngine(history=history)
+decision_engine = build_decision_engine(config, history)
 boundary = AdaptiveSemanticTrustBoundary(
     history=history,
     policy=policy,
@@ -38,10 +39,17 @@ boundary = AdaptiveSemanticTrustBoundary(
     behavioral_trust_engine=BehavioralTrustEngine(high_risk_capabilities=set(policy["capability_whitelist"]["high_risk"]), ema_alpha=tb_config["ema_alpha"]),
     audit_logger=AuditLogger(Path("artifacts/trust_boundary/audit_log.jsonl")),
 )
-session = SessionContext(agent_id="decision_engine_v1", session_id="demo-session", issued_at=datetime.now(timezone.utc), nonce="demo-nonce")
-
-
 def show(name: str, plan: CyberActionPlan, context: ThreatContext) -> None:
+    # A genuinely unique nonce per call (uuid4, not derived from the fixed
+    # scenario `name`) - history is persisted across script runs
+    # (artifacts/agentic/history.jsonl), and preprocessing.py's nonce-replay
+    # check is keyed on (agent_id, nonce) within the session freshness window,
+    # so a name-derived nonce would collide with THIS SAME SCRIPT'S prior run
+    # if re-run within session_max_age_seconds - verified live: it did.
+    session = SessionContext(
+        agent_id="decision_engine_v1", session_id=f"demo-session-{name}",
+        issued_at=datetime.now(timezone.utc), nonce=uuid4().hex,
+    )
     decision = boundary.evaluate(plan, context, session)
     print(f"\n=== {name} ===")
     print(f"attack_type={context.alert.attack_type} severity={context.severity} priority={context.priority}")
@@ -63,7 +71,7 @@ show("clean low-severity", decision_engine.decide(alert1, context1), context1)
 
 # 2. Critical alert with a well-formed rationale - expect at least the
 # low-risk playbooks to execute, possibly the high-risk ones too if trust is high.
-alert2 = IDSAlert(attack_type="DDoS_HTTP_Flood", confidence=0.9, source_id="203.0.113.7", target_asset="gateway-01", protocol="HTTP")
+alert2 = IDSAlert(attack_type="DDoS_HTTP", confidence=0.9, source_id="203.0.113.7", target_asset="gateway-01", protocol="HTTP")
 context2 = threat_context_generator.enrich(alert2)
 show("critical, well-formed", decision_engine.decide(alert2, context2), context2)
 

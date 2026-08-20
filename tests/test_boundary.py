@@ -21,7 +21,7 @@ HIGH_RISK = set(POLICY["capability_whitelist"]["high_risk"])
 THRESHOLDS = {"low": 0.40, "medium": 0.65, "high": 0.85}
 
 
-def build_boundary(tmp_path):
+def build_boundary(tmp_path, executor=None):
     return AdaptiveSemanticTrustBoundary(
         history=EntityHistory(),
         policy=POLICY,
@@ -30,6 +30,7 @@ def build_boundary(tmp_path):
         semantic_risk_engine=SemanticRiskEngine(force_fallback=True),
         behavioral_trust_engine=BehavioralTrustEngine(high_risk_capabilities=HIGH_RISK, seed=0),
         audit_logger=AuditLogger(tmp_path / "audit.jsonl"),
+        executor=executor,
     )
 
 
@@ -96,3 +97,50 @@ def test_low_trust_blocks_despite_clean_stage_1_and_2(tmp_path):
     assert decision.autonomy_mode == "read_only"
     assert not decision.accepted
     assert decision.executed_actions == []
+
+
+def test_executor_mode_defaults_to_simulate_and_is_none_before_capability_enforcement_runs(tmp_path):
+    alert = IDSAlert(attack_type="Port_Scanning", confidence=0.7, source_id="10.0.0.5", target_asset="plc-01")
+    context = ThreatContext(alert=alert, severity="medium", priority="P2", mitre_techniques=[], allowed_playbooks=["block_source"])
+    plan = CyberActionPlan(
+        incident_id="i6", confidence=0.7, rationale="Medium severity Port_Scanning detected; recommending block_source for investigation and containment.",
+        actions=[CyberAction(capability="block_source", target="10.0.0.5")],
+    )
+    happy_path_decision = build_boundary(tmp_path).evaluate(plan, context, make_session("agent-mode-simulate"))
+    assert happy_path_decision.terminal_stage == "capability_enforcement"
+    assert happy_path_decision.executor_mode == "simulate"
+
+    stale_plan = CyberActionPlan(incident_id="i7", confidence=0.7, rationale="fine", actions=[CyberAction(capability="block_source")])
+    rejected_decision = build_boundary(tmp_path).evaluate(stale_plan, context, make_session("agent-mode-none", age=timedelta(hours=1)))
+    assert rejected_decision.terminal_stage == "preprocessing"
+    assert rejected_decision.executor_mode is None
+
+
+def test_executor_mode_reflects_a_custom_executors_mode_attribute(tmp_path):
+    class FakeProductionExecutor:
+        mode = "production"
+
+        def execute(self, action):
+            return True
+
+    alert = IDSAlert(attack_type="Port_Scanning", confidence=0.7, source_id="10.0.0.5", target_asset="plc-01")
+    context = ThreatContext(alert=alert, severity="medium", priority="P2", mitre_techniques=[], allowed_playbooks=["block_source"])
+    plan = CyberActionPlan(
+        incident_id="i8", confidence=0.7, rationale="Medium severity Port_Scanning detected; recommending block_source for investigation and containment.",
+        actions=[CyberAction(capability="block_source", target="10.0.0.5")],
+    )
+    decision = build_boundary(tmp_path, executor=FakeProductionExecutor()).evaluate(plan, context, make_session("agent-mode-production"))
+
+    assert decision.executor_mode == "production"
+
+
+def test_trust_decision_carries_plan_engine_provenance(tmp_path):
+    alert = IDSAlert(attack_type="Port_Scanning", confidence=0.7, target_asset="plc-01")
+    context = ThreatContext(alert=alert, severity="medium", priority="P2", mitre_techniques=[], allowed_playbooks=["block_source"])
+    plan = CyberActionPlan(
+        incident_id="i5", confidence=0.7, rationale="fine",
+        actions=[CyberAction(capability="block_source", target="plc-01")], engine="llm",
+    )
+    decision = build_boundary(tmp_path).evaluate(plan, context, make_session("agent-provenance"))
+
+    assert decision.engine == "llm"

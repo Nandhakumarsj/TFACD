@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import datetime
 import ipaddress
+import os
+import stat
 from pathlib import Path
 
 from cryptography import x509
@@ -19,6 +21,21 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
 _VALIDITY_DAYS = 365
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """Best-effort owner-only permissions on a written private-key file.
+    os.chmod on Windows can only toggle the read-only bit (no POSIX owner/
+    group/other model), so this is a no-op there beyond that - real
+    protection when this runs on the Linux IIoT edge devices that are this
+    project's actual deployment target (see README). Never raises: a
+    filesystem that doesn't support chmod (e.g. some network shares) should
+    not fail key generation over a permissions best-effort.
+    """
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
 
 
 def _self_signed_ca(common_name: str) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
@@ -77,6 +94,7 @@ def write_ca_and_server_cert(output_dir: str | Path) -> dict[str, Path]:
             encryption_algorithm=serialization.NoEncryption(),
         )
     )
+    _restrict_to_owner(paths["server_key"])
     return paths
 
 
@@ -105,5 +123,6 @@ def write_supernode_auth_keypair(output_dir: str | Path, node_name: str) -> dict
     private_bytes, public_bytes = generate_supernode_auth_keypair()
     paths = {"private": out / f"{node_name}_auth", "public": out / f"{node_name}_auth.pub"}
     paths["private"].write_bytes(private_bytes)
+    _restrict_to_owner(paths["private"])
     paths["public"].write_bytes(public_bytes)
     return paths

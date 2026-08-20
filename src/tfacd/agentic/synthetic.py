@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from tfacd.runtime.contracts import CyberAction, CyberActionPlan, SessionContext, ThreatContext, TrustDecision
 from tfacd.trust_boundary.boundary import AdaptiveSemanticTrustBoundary
@@ -45,9 +46,17 @@ def simulate_agent_population(
     results: dict[str, list[TrustDecision]] = {}
     for archetype in _ARCHETYPES:
         agent_id = f"agent-{archetype}"
-        session = SessionContext(agent_id=agent_id, session_id=f"session-{archetype}", issued_at=datetime.now(timezone.utc), nonce=f"nonce-{archetype}")
         decisions = []
         for round_index in range(rounds_per_agent):
+            # A genuinely unique nonce per round (uuid4, not derived from the fixed
+            # archetype/round_index) - the caller's history is typically persisted
+            # across script runs, and a deterministic nonce would collide with a
+            # PRIOR run's still-fresh nonce (verified live in
+            # scripts/run_trust_boundary_demo.py - the same failure mode).
+            session = SessionContext(
+                agent_id=agent_id, session_id=f"session-{archetype}-{round_index}",
+                issued_at=datetime.now(timezone.utc), nonce=uuid4().hex,
+            )
             plan = _plan_for(archetype, round_index, context, incident_id=f"synthetic-{archetype}")
             decisions.append(boundary.evaluate(plan, context, session))
         results[agent_id] = decisions

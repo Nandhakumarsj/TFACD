@@ -1,0 +1,90 @@
+# Declarative attack-scenario definitions for scripts/run_attack_scenario.py -
+# each scenario replays real per-category Edge-IIoTset captures
+# (datasets/Edge_IIoTset/{Normal traffic, Attack traffic}) in a normal-traffic
+# baseline -> attack-injected timeline, paced by real PCAP capture timestamps
+# (streaming/live_source.py), instead of the flat single-file held-out replay
+# scripts/run_streaming_demo.py uses by default.
+#
+# expected_capability is informational only, for the script's report - the
+# trust boundary still decides for real; nothing here forces that outcome.
+# Both attack scenarios reuse EXISTING, already-whitelisted capabilities
+# (configs/trust_policy.yaml) - no new capability strings are introduced here.
+# "network disconnect" / "IP isolation" in the scenario names describe the
+# real-world intent; isolate_segment/block_source are the actual capabilities
+# that get evaluated and (if trust is high enough and executor.mode:
+# "production" is set) really executed - see trust_boundary/production_executor.py.
+#
+# Baseline is Temperature_and_Humidity, not Modbus - measured directly (100
+# rows each): every other Normal-traffic sensor type (Temperature_and_Humidity,
+# Soil_Moisture, Distance, Water_Level, phValue, Sound_Sensor, Flame_Sensor,
+# Heart_Rate, IR_Receiver) classifies 100% "Normal", but real Modbus traffic
+# classifies "Normal" only 21% of the time (59% DDoS_UDP, 20% Port_Scanning) -
+# see the README's "Live attack-scenario streaming" section and the dedicated
+# modbus_normal_traffic_generalization_check scenario below, which exists
+# specifically to surface that finding rather than route around it.
+
+ddos_segment_isolation:
+  description: >
+    Baseline Temperature_and_Humidity sensor traffic, then a DDoS TCP SYN flood
+    injected mid-stream - "network disconnect" scenario. isolate_segment is the
+    closest real capability to disconnecting/isolating a network segment under
+    sustained flood traffic.
+  expected_capability: isolate_segment
+  steps:
+    - label: baseline_temp_humidity
+      csv_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.csv"
+      pcap_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.pcap"
+      max_records: 20
+      speed_multiplier: 60.0
+    - label: ddos_tcp_syn_flood_injected
+      csv_path: "datasets/Edge_IIoTset/Attack traffic/DDoS_TCP_SYN_Flood_attack.csv"
+      pcap_path: "datasets/Edge_IIoTset/Attack traffic/DDoS TCP SYN Flood Attacks.pcap"
+      max_records: 150
+      speed_multiplier: 60.0
+    - label: baseline_temp_humidity_resumed
+      csv_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.csv"
+      pcap_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.pcap"
+      max_records: 50
+      speed_multiplier: 60.0
+
+portscan_source_block:
+  description: >
+    Baseline Temperature_and_Humidity sensor traffic, then a port-scanning attack
+    injected mid-stream - "IP isolation" scenario. block_source is the closest
+    real capability to blocking the scanning source's address.
+  expected_capability: block_source
+  steps:
+    - label: baseline_temp_humidity
+      csv_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.csv"
+      pcap_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.pcap"
+      max_records: 20
+      speed_multiplier: 60.0
+    - label: port_scanning_injected
+      csv_path: "datasets/Edge_IIoTset/Attack traffic/Port_Scanning_attack.csv"
+      pcap_path: "datasets/Edge_IIoTset/Attack traffic/Port Scanning attack.pcap"
+      max_records: 150
+      speed_multiplier: 60.0
+    - label: baseline_temp_humidity_resumed
+      csv_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.csv"
+      pcap_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.pcap"
+      max_records: 50
+      speed_multiplier: 60.0
+
+modbus_normal_traffic_generalization_check:
+  description: >
+    Diagnostic, not an attack scenario: replays ONLY real Modbus baseline traffic
+    (no attack injected) to surface a measured finding - the certified model
+    recognizes real Modbus captures as "Normal" only ~21% of the time (measured:
+    59% misclassified DDoS_UDP, 20% Port_Scanning, 21% correctly Normal, n=100),
+    unlike every other Normal-traffic sensor type in this dataset, which
+    classifies 100% correctly. Since this project is explicitly framed around
+    IIoT/SCADA protocols including Modbus, this is a genuine, documented
+    generalization gap, not something to route around by only ever demoing
+    with a sensor type that classifies cleanly.
+  expected_capability: null
+  steps:
+    - label: modbus_only
+      csv_path: "datasets/Edge_IIoTset/Normal traffic/Modbus/Modbus.csv"
+      pcap_path: "datasets/Edge_IIoTset/Normal traffic/Modbus/Modbus.pcap"
+      max_records: 100
+      speed_multiplier: 60.0

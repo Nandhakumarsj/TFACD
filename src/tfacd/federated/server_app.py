@@ -72,6 +72,12 @@ def main(grid: Grid, context: Context) -> None:
             "strategy": ("IntegrityAwareStrategy" if use_ftil else "FedAvg" if proximal_mu == 0.0 else "FedProx"),
             "proximal_mu": proximal_mu,
             "rounds": int(context.run_config["num-server-rounds"]),
-            "status": "integrity-filtered" if use_ftil else "baseline-not-yet-integrity-filtered",
+            # A training run only produces a trained checkpoint - certify_model.py
+            # is what promotes status to "certified". Every training run rewrites
+            # this manifest, so sha256 alone can never detect "a retraining run
+            # replaced the certified model"; only a re-checked signature can
+            # (see integrity/certification.py::verify_release).
+            "status": "trained-uncertified",
+            "integrity_filtered": use_ftil,
         },
     )

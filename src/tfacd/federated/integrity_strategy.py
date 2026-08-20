@@ -127,23 +127,37 @@ class IntegrityAwareStrategy(FedProx):
         accepted_ids = list(client_ids)
         rejected_detector: list[str] = []
         trust_scores: dict[str, float] = {}
+        ood_scores: dict[str, float] = {}
+        detection_metrics = None
         if client_ids:  # 5. vectorize deltas + apply detector (handles <3 clients by accepting all)
             vectors = np.stack([flatten_delta(client_states[c], reference) for c in client_ids])
             detection = self.detector.detect(client_ids, vectors)
             accepted_ids = [c for c, keep in zip(client_ids, detection.benign_mask) if keep]
             rejected_detector = [c for c, keep in zip(client_ids, detection.benign_mask) if not keep]
             trust_scores = dict(zip(client_ids, detection.trust_scores.tolist()))
+            ood_scores = dict(zip(client_ids, detection.ood_scores.tolist()))
+            detection_metrics = detection.metrics
 
-        self._log_trust_evidence(server_round, accepted_ids, rejected_validation, rejected_detector, trust_scores)  # 7. persist evidence
+        # 7. persist evidence - includes the per-client OOD/personalization
+        # scores and the clustering technique/quality metrics that produced this
+        # round's decision, not just the accept/reject outcome.
+        self._log_trust_evidence(server_round, accepted_ids, rejected_validation, rejected_detector, trust_scores, ood_scores, detection_metrics)
 
-        metrics = MetricRecord(
-            {
-                "ftil_accepted": len(accepted_ids),
-                "ftil_rejected_validation": len(rejected_validation),
-                "ftil_rejected_detector": len(rejected_detector),
-                "ftil_rejected_error": rejected_error,
-            }
-        )
+        metrics_payload: dict[str, int | float | str] = {
+            "ftil_accepted": len(accepted_ids),
+            "ftil_rejected_validation": len(rejected_validation),
+            "ftil_rejected_detector": len(rejected_detector),
+            "ftil_rejected_error": rejected_error,
+        }
+        if detection_metrics is not None:
+            # cluster_method is a string - Flower's MetricRecord only accepts
+            # int/float/list[int]/list[float] (raises TypeError otherwise), so it
+            # stays out of this payload; it's already in the JSONL trust log's
+            # "detection" block every round, which has no such restriction.
+            metrics_payload["ftil_explained_variance_ratio"] = detection_metrics.explained_variance_ratio
+            metrics_payload["ftil_silhouette"] = detection_metrics.silhouette if detection_metrics.silhouette is not None else -1.0
+            metrics_payload["ftil_max_ood_score"] = max(ood_scores.values()) if ood_scores else 0.0
+        metrics = MetricRecord(metrics_payload)
         if not accepted_ids:
             return None, metrics
 
@@ -159,7 +173,14 @@ class IntegrityAwareStrategy(FedProx):
         return _numpy_to_arrayrecord(aggregated), metrics  # 8. return ArrayRecord + MetricRecord
 
     def _log_trust_evidence(
-        self, server_round: int, accepted_ids: list[str], rejected_validation: list[str], rejected_detector: list[str], trust_scores: dict[str, float]
+        self,
+        server_round: int,
+        accepted_ids: list[str],
+        rejected_validation: list[str],
+        rejected_detector: list[str],
+        trust_scores: dict[str, float],
+        ood_scores: dict[str, float],
+        detection_metrics,
     ) -> None:
         self.trust_log_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -167,7 +188,16 @@ class IntegrityAwareStrategy(FedProx):
             "accepted": accepted_ids,
             "rejected_validation": rejected_validation,
             "rejected_detector": rejected_detector,
+            # trust_scores: EMA-smoothed personalized per-client trust (0..1),
+            # carries across rounds. ood_scores: this round's distance from the
+            # cohort's robust center in PCA space, as a multiple of the cohort's
+            # median distance (1.0 = typical, memoryless). detection: which
+            # clustering technique produced both, plus its own quality signals
+            # (explained variance, silhouette) - see integrity/detector.py's
+            # DetectionMetrics/DetectionResult docstrings for the distinction.
             "trust_scores": trust_scores,
+            "ood_scores": ood_scores,
+            "detection": detection_metrics.to_dict() if detection_metrics is not None else None,
         }
         with self.trust_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")

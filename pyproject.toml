@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tfacd"
 version = "0.1.0"
-description = "Phase-I trustworthy federated IIoT intrusion detection and Phase-II agentic decision making for cyber-physical systems"
+description = "Phase-I starter for trustworthy federated IIoT intrusion detection"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 flower = ["flwr[simulation]>=1.30,<1.31"]
 dev = ["pytest>=8,<10", "ruff>=0.8,<1", "mypy>=1.13,<2"]
+agentic-llm = ["langgraph>=0.2,<0.3", "langchain-core>=0.3,<0.4", "langchain-ollama>=0.2,<0.3"]
 
 [project.scripts]
 tfacd-inspect = "tfacd.data.inspect:main"

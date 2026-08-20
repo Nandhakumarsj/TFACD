@@ -50,6 +50,15 @@ federated:
   partition_mode: "dirichlet"
   dirichlet_alpha: 0.5
   min_samples_per_client: 100
+  # min_samples_per_client only checks each client's TOTAL sample count - a rare
+  # class (e.g. MITM, Fingerprinting) can be reduced to exactly 0 examples on a
+  # client and still pass, since the total stays well above 100 from other
+  # classes alone (verified empirically at lower alpha). This is a second,
+  # opt-in guard: every client sees at least this many examples of EVERY class.
+  # 1, not higher - Dirichlet partitioning exists specifically to simulate label
+  # skew, so this only closes "a class is completely invisible to a client",
+  # not "every client sees every class well" (which would defeat the point).
+  min_class_samples_per_client: 1
   rounds: 3
   local_epochs: 1
 
@@ -77,6 +86,44 @@ runtime:
   threat_context_mapping: "configs/threat_context.yaml"
   trust_policy_path: "configs/trust_policy.yaml"
 
+agentic:
+  decision_engine:
+    # "template" (default) | "llm" - the LLM engine is opt-in and gated: see
+    # agentic/factory.py::build_decision_engine, which refuses to construct it
+    # without a passing artifacts/agentic/llm_benchmark_report.json.
+    engine: "template"
+  llm:
+    provider: "ollama"
+    model: "qwen3:8b"
+    # Optional second Ollama model, tried only if `model` errors out or
+    # exhausts its retries in the same reason/validate/retry graph - a
+    # MODEL-level fallback, distinct from fallback_engine below (which is the
+    # ENGINE-level fallback: llm -> deterministic template). null = today's
+    # single-model behavior, unchanged. Both models must support Ollama
+    # tool-calling (structured_output_method: "function_calling") - this is
+    # not a json_mode escape hatch. Only wired in if its own entry in the
+    # benchmark report (scripts/run_llm_engine_benchmark.py --fallback-model)
+    # says go=true - see agentic/factory.py.
+    fallback_model: null
+    base_url: "http://localhost:11434"
+    temperature: 0.0
+    # 4096, not 8192: measured on this workstation's 8GB P4000, a real decision
+    # uses ~534 prompt + ~703 output tokens, and halving num_ctx cut the model's
+    # VRAM footprint 6041mb -> 5438mb, which is the difference between failing
+    # and passing the benchmark gate's VRAM headroom check.
+    num_ctx: 4096
+    # LangGraph reason/validate retries before falling back to the deterministic
+    # engine - see agentic/graph.py.
+    max_attempts: 2
+    # "function_calling" (default) requires Ollama tool-calling support -
+    # verified live: gemma3:4b returns HTTP 400 "does not support tools" under
+    # it. "json_mode" works with any model (schema spelled out in the prompt
+    # instead of via tool metadata) - see agentic/graph.py::build_system_prompt.
+    structured_output_method: "function_calling"
+    request_timeout_seconds: 60
+    require_benchmark_gate: true
+    benchmark_report_path: "artifacts/agentic/llm_benchmark_report.json"
+
 trust_boundary:
   weight_semantic_risk: 0.4       # ws
   weight_context_consistency: 0.3 # wc
@@ -91,3 +138,48 @@ trust_boundary:
   # Smooths behavioral trust across repeated interactions, same idiom as
   # PCAClusterEMAFilter.ema_alpha in the FTIL layer.
   ema_alpha: 0.3
+  executor:
+    # "simulate" (default) - SimulatedExecutor, today's only behavior: logs
+    # "would execute", takes no real action. "production" - ProductionExecutor
+    # (trust_boundary/production_executor.py): real OS firewall commands for
+    # block_source/isolate_segment/rate_limit (Linux nftables primary,
+    # iptables fallback, Windows netsh advfirewall - rate_limit has no
+    # Windows backend and falls back to simulated for that one capability),
+    # a real persisted log for rotate_session and the low-risk capabilities.
+    # Non-negotiable per explicit instruction that this switch must exist -
+    # "simulate" stays the safe default everywhere it isn't explicitly
+    # overridden to "production".
+    mode: "simulate"
+    # Hard rail checked BEFORE any real command is built, independent of and
+    # in addition to the trust boundary's own whitelist/autonomy-mode checks.
+    # Defaults (loopback + link-local) are a sane minimum, not a complete
+    # safety net - add your real management/gateway addresses here before
+    # ever setting mode: "production" on a real network.
+    protected_targets: ["127.0.0.1/32", "169.254.0.0/16", "::1/128"]
+
+streaming:
+  model_path: "artifacts/models/flower_ftil_final.pt"
+  public_key_path: "artifacts/keys/certification_ed25519_public.pem"
+  # The one control that actually detects a retraining run silently replacing
+  # the certified model (see integrity/certification.py::verify_release) -
+  # defaulting to false would make Gate 6's "verification before runtime
+  # loading" a slogan rather than a gate.
+  require_signature: true
+  require_certified_status: true
+  # transform() cost is a measured, ~fixed 0.65s per call regardless of batch
+  # size (the fitted preprocessor's vocabulary-sized OneHotEncoder dominates) -
+  # batch_size is the only throughput knob that exists.
+  batch_size: 1024
+  max_records: 20000
+  replay_seed: 42
+  # Replay the exact held-out rows Gate 2/3 already scored offline, not
+  # arbitrary (possibly training-set) rows - a deviation from the offline
+  # macro-F1 then indicates a pipeline bug, not generalization.
+  holdout_only: true
+  emit_normal: false
+  min_confidence: 0.0
+  # Bounds how many alerts flow through the full agentic + trust-boundary path
+  # (IDS inference itself still covers the whole batched replay) - the
+  # per-agent entity_action_quota_per_hour above is a real security control,
+  # not something to raise just to make a longer demo run pass.
+  max_incidents: 10

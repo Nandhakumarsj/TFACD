@@ -89,3 +89,108 @@ def select_best_candidate(results: list[GridResult], fpr_tolerance: float = 0.1)
     if within_tolerance:
         return max(within_tolerance, key=lambda r: r.detection_metrics["tpr"]), True
     return max(scored, key=lambda r: r.detection_metrics["tpr"] - r.detection_metrics["fpr"]), False
+
+
+# --- AGENTIC ASTB ANALYST FEEDBACK & THRESHOLD OPTIMIZER ---
+
+import json
+from pathlib import Path
+
+
+@dataclass
+class AnalystFeedbackRecord:
+    incident_id: str
+    agent_id: str
+    semantic_risk: float
+    consistency: float
+    behavioral_trust: float
+    expected_accepted: bool
+    label: str  # "correct", "false_positive", "false_negative", "over_restricted"
+    notes: str = ""
+
+
+class AnalystFeedbackStore:
+    """JSONL-backed persistent store for human analyst ground-truth labels."""
+
+    def __init__(self, store_path: str | Path = "artifacts/analytics/analyst_feedback.jsonl"):
+        self.store_path = Path(store_path)
+
+    def add_feedback(self, record: AnalystFeedbackRecord) -> None:
+        self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "incident_id": record.incident_id,
+            "agent_id": record.agent_id,
+            "semantic_risk": record.semantic_risk,
+            "consistency": record.consistency,
+            "behavioral_trust": record.behavioral_trust,
+            "expected_accepted": record.expected_accepted,
+            "label": record.label,
+            "notes": record.notes,
+        }
+        with self.store_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(data) + "\n")
+
+    def load_feedback(self) -> list[AnalystFeedbackRecord]:
+        if not self.store_path.exists():
+            return []
+        records = []
+        with self.store_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    d = json.loads(line)
+                    records.append(AnalystFeedbackRecord(**d))
+        return records
+
+
+@dataclass
+class AgenticGridResult:
+    weights: tuple[float, float, float]  # (ws, wc, wb)
+    thresholds: dict[str, float]  # {low, medium, high}
+    f1_score: float
+    precision: float
+    recall: float
+
+
+def run_agentic_grid_search(feedback_records: list[AnalystFeedbackRecord]) -> list[AgenticGridResult]:
+    """Optimizes ASTB trust weights (ws, wc, wb) and threshold boundaries against ground-truth analyst feedback."""
+    if not feedback_records:
+        return []
+
+    weight_candidates = [
+        (0.4, 0.3, 0.3),
+        (0.5, 0.3, 0.2),
+        (0.3, 0.4, 0.3),
+        (0.33, 0.33, 0.34),
+    ]
+    threshold_candidates = [
+        {"low": 0.40, "medium": 0.65, "high": 0.85},
+        {"low": 0.35, "medium": 0.60, "high": 0.80},
+        {"low": 0.45, "medium": 0.70, "high": 0.90},
+    ]
+
+    results: list[AgenticGridResult] = []
+
+    for ws, wc, wb in weight_candidates:
+        for thresh in threshold_candidates:
+            tp = fp = fn = tn = 0
+            for rec in feedback_records:
+                # T = ws * (1 - Rs) + wc * Rc + wb * Rb
+                trust_val = ws * (1.0 - rec.semantic_risk) + wc * rec.consistency + wb * rec.behavioral_trust
+                predicted_accepted = trust_val >= thresh["low"]
+
+                if predicted_accepted and rec.expected_accepted:
+                    tp += 1
+                elif predicted_accepted and not rec.expected_accepted:
+                    fp += 1
+                elif not predicted_accepted and rec.expected_accepted:
+                    fn += 1
+                else:
+                    tn += 1
+
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+            results.append(AgenticGridResult(weights=(ws, wc, wb), thresholds=thresh, f1_score=f1, precision=precision, recall=recall))
+
+    return sorted(results, key=lambda r: r.f1_score, reverse=True)

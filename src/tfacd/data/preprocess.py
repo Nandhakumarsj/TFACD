@@ -163,3 +163,50 @@ def load_prepared(output_dir: str | Path) -> PreparedData:
         arrays["x_train"], arrays["y_train"], arrays["x_val"], arrays["y_val"],
         arrays["x_test"], arrays["y_test"], metadata["num_classes"], metadata["feature_dim"]
     )
+
+
+def heldout_indices(config: dict[str, Any]) -> np.ndarray:
+    """Re-derives the exact raw-row indices preprocess() set aside as the held-out
+    test split, straight from the raw CSV's label column - without re-running the
+    full pipeline or touching the (300+MB) preprocessor.joblib. Streaming replay
+    can then feed these rows back through a StreamingFeatureExtractor for an
+    honest accuracy readout: any deviation from Gate 2/3's offline macro-F1
+    indicates a pipeline bug, not generalization, because these are the same
+    rows already scored offline.
+
+    Reuses the same target-column resolution and split calls as preprocess()
+    precisely so the two can't silently drift apart; asserted below rather than
+    assumed, in case they ever do anyway.
+    """
+    cfg = config["data"]
+    raw_path = Path(cfg["raw_csv"])
+    header = pd.read_csv(raw_path, nrows=0)
+    label_col = _resolve_column(header, cfg.get("label_column", "auto"), LABEL_CANDIDATES)
+    attack_type = _find_candidate(list(header.columns), ATTACK_TYPE_CANDIDATES)
+
+    usecols = {label_col} | ({attack_type} if attack_type else set())
+    target_frame = pd.read_csv(raw_path, nrows=cfg.get("max_rows"), usecols=list(usecols), low_memory=False)
+    target_col = attack_type if attack_type and target_frame[attack_type].nunique() > 2 else label_col
+    y_raw = target_frame[target_col].astype(str).fillna("UNKNOWN")
+    y = LabelEncoder().fit_transform(y_raw)
+
+    seed = int(config.get("seed", 42))
+    test_size = float(cfg.get("test_size", 0.15))
+    val_size = float(cfg.get("validation_size", 0.15))
+
+    idx = np.arange(len(y))
+    idx_trainval, idx_test, y_trainval, y_test = train_test_split(idx, y, test_size=test_size, random_state=seed, stratify=y)
+    relative_val = val_size / (1.0 - test_size)
+    train_test_split(idx_trainval, y_trainval, test_size=relative_val, random_state=seed, stratify=y_trainval)
+
+    prepared_path = Path(cfg["output_dir"]) / "prepared.npz"
+    if prepared_path.exists():
+        prepared_y_test = np.load(prepared_path)["y_test"]
+        if not np.array_equal(y_test, prepared_y_test):
+            raise AssertionError(
+                "heldout_indices() reproduced a different split than prepared.npz's y_test - "
+                "preprocess()'s split logic or config (seed/test_size/validation_size/max_rows) "
+                "changed without this function being updated to match. Refusing to return "
+                "indices that would silently replay the wrong rows."
+            )
+    return idx_test

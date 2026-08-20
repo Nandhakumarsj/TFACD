@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -35,3 +36,74 @@ def chain_hash(previous_hash: str, payload: bytes) -> str:
     digest.update(previous_hash.encode("utf-8"))
     digest.update(payload)
     return digest.hexdigest()
+
+
+@dataclass
+class ReleaseVerification:
+    ok: bool
+    status_ok: bool
+    sha256_ok: bool
+    signature_ok: bool | None  # None: no signature check was performed at all
+    reasons: list[str] = field(default_factory=list)
+
+
+def verify_release(
+    model_path: str | Path,
+    *,
+    manifest_path: str | Path | None = None,
+    signature_path: str | Path | None = None,
+    public_key_path: str | Path = "artifacts/keys/certification_ed25519_public.pem",
+    require_signature: bool = True,
+    require_certified_status: bool = True,
+) -> ReleaseVerification:
+    """Shared verification policy for anything that loads a certified checkpoint
+    (scripts/verify_certified_model.py, streaming/pipeline.py) - one place so the
+    two can't drift. Check order matters: status first (fails fast, no key
+    material touched, self-explanatory message), then sha256, then signature -
+    the only one of the three that actually detects a retraining run silently
+    replacing the certified model (every training run rewrites the manifest, so
+    sha256 alone always "passes" against whatever the file currently is).
+    """
+    model = Path(model_path)
+    manifest = Path(manifest_path) if manifest_path else model.with_suffix(model.suffix + ".manifest.json")
+    signature = Path(signature_path) if signature_path else model.with_suffix(model.suffix + ".sig")
+    reasons: list[str] = []
+
+    if not manifest.exists():
+        return ReleaseVerification(False, False, False, None, [f"no manifest at {manifest}"])
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    status = payload.get("metadata", {}).get("status")
+
+    status_ok = (not require_certified_status) or status == "certified"
+    if not status_ok:
+        reasons.append(f"status={status!r}, expected 'certified' (run: python scripts/certify_model.py {model} --sign)")
+
+    sha256_ok = payload.get("sha256") == sha256_file(model)
+    if not sha256_ok:
+        reasons.append(f"sha256 mismatch against {manifest}")
+
+    signature_ok: bool | None = None
+    if require_signature or signature.exists():
+        from tfacd.integrity.signing import verify_file  # local import: avoids a hard cryptography dependency for callers that never touch signatures
+
+        if not signature.exists():
+            signature_ok = False
+            reasons.append(f"no signature at {signature} (run: python scripts/certify_model.py {model} --sign)")
+        elif not Path(public_key_path).exists():
+            signature_ok = False
+            reasons.append(f"signature present but public key missing at {public_key_path}")
+        else:
+            signature_ok = verify_file(model, public_key_path, signature)
+            if not signature_ok:
+                reasons.append(f"signature verification failed against {signature}")
+
+    # signature_ok is None only when no check was performed at all (possible
+    # only when require_signature=False AND no .sig file exists - see the
+    # `if require_signature or signature.exists():` branch above). Spelled out
+    # explicitly here (rather than the previous `signature_ok is not False`,
+    # which passed None regardless of require_signature) so this stays correct
+    # even if that branch's logic changes later, instead of depending on an
+    # invariant the boolean check itself doesn't express.
+    signature_component_ok = signature_ok is True or (signature_ok is None and not require_signature)
+    ok = status_ok and sha256_ok and signature_component_ok
+    return ReleaseVerification(ok, status_ok, sha256_ok, signature_ok, reasons)

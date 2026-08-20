@@ -33,3 +33,26 @@ def test_repeat_activity_from_same_source_is_correlated():
     assert "Repeat activity" in second_plan.rationale
     assert second_plan.confidence > context.alert.confidence
     assert first_plan.incident_id != second_plan.incident_id
+
+
+def test_plan_defaults_to_template_engine():
+    engine = AgenticDecisionEngine(history=EntityHistory())
+    context = make_context()
+    plan = engine.decide(context.alert, context)
+
+    assert plan.engine == "template"
+
+
+def test_source_targeted_capabilities_target_the_attacker_not_the_protected_asset():
+    """block_source/rate_limit must target alert.source_id (the attacker) - a
+    real executor blocking alert.target_asset instead would block the
+    protected device, not the attack. isolate_segment stays target_asset
+    (unchanged), since it protects the asset's segment."""
+    engine = AgenticDecisionEngine(history=EntityHistory())
+    context = make_context(playbooks=["block_source", "rate_limit", "isolate_segment"])
+    plan = engine.decide(context.alert, context)
+
+    by_capability = {a.capability: a.target for a in plan.actions}
+    assert by_capability["block_source"] == context.alert.source_id
+    assert by_capability["rate_limit"] == context.alert.source_id
+    assert by_capability["isolate_segment"] == context.alert.target_asset

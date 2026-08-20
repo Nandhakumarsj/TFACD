@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import numpy as np
 from sklearn.ensemble import IsolationForest
@@ -55,3 +55,52 @@ class BehavioralTrustEngine:
         updated = self.ema_alpha * round_score + (1.0 - self.ema_alpha) * previous
         self.trust_ema[session.agent_id] = updated
         return updated
+
+    def refit_from_history(self, history: EntityHistory, min_samples: int = 20) -> bool:
+        """Replaces the synthetic cold-start population with one reconstructed
+        from REAL observed trust_decision events, once enough real data exists.
+        Unsupervised - does not need "was this decision wrong" ground truth
+        (which doesn't exist anywhere in this repo, see feedback_loop.py's own
+        docstring); it only needs "what does typical observed behavior actually
+        look like now", which trust history already answers. Returns False
+        (no-op, population unchanged) if fewer than min_samples real
+        trust_decision events exist across ALL entities - refitting an anomaly
+        detector on a handful of points would replace a documented-synthetic
+        population with an undocumented-noisy one, not a real improvement.
+
+        Deliberately not called anywhere in the live pipeline (boundary.py never
+        calls this) - exposed as an explicit, operator-invoked capability via
+        scripts/refit_behavioral_trust.py, the same "tested library capability,
+        not something a script silently triggers mid-run" posture as
+        run_threshold_optimizer.py for the FL-side detector.
+
+        Reconstructs each event's feature vector EXACTLY, not approximately:
+        high_risk_fraction/action_count come directly from that event's own
+        stored "capabilities" list (persisted by boundary.py's _finalize());
+        violation_rate/recent_event_count are recomputed the same way
+        _feature_vector() computes them live - a rolling 1-hour window of that
+        SAME entity's OTHER events strictly before this one - by replaying
+        history chronologically per entity, not read as a shortcut aggregate.
+        """
+        by_entity: dict[str, list[dict]] = {}
+        for event in history.all_events(kind="trust_decision"):
+            by_entity.setdefault(event["entity_id"], []).append(event)
+
+        rows: list[list[float]] = []
+        for events in by_entity.values():
+            events = sorted(events, key=lambda e: e["timestamp"])
+            for index, event in enumerate(events):
+                capabilities = event["payload"].get("capabilities") or []
+                high_risk_fraction = sum(1 for c in capabilities if c in self.high_risk_capabilities) / len(capabilities) if capabilities else 0.0
+                event_time = datetime.fromisoformat(event["timestamp"])
+                window_start = event_time - timedelta(hours=1)
+                prior = [e for e in events[:index] if datetime.fromisoformat(e["timestamp"]) >= window_start]
+                violation_rate = sum(1 for e in prior if e["payload"].get("policy_violation")) / len(prior) if prior else 0.0
+                rows.append([high_risk_fraction, float(len(capabilities)), violation_rate, float(len(prior))])
+
+        if len(rows) < min_samples:
+            return False
+
+        population = np.array(rows, dtype=np.float64)
+        self._forest = IsolationForest(n_estimators=100, random_state=0, contamination="auto").fit(population)
+        return True

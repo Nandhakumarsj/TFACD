@@ -20,6 +20,7 @@ else:
         float(fed["dirichlet_alpha"]),
         int(config["seed"]),
         int(fed["min_samples_per_client"]),
+        min_class_samples=int(fed.get("min_class_samples_per_client", 0)),
     )
 out = Path(config["data"]["output_dir"]) / "partitions"
 save_partitions(partitions, out, prepared.y_train)

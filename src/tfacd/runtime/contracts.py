@@ -33,6 +33,9 @@ class CyberActionPlan(BaseModel):
     rationale: str
     actions: list[CyberAction]
     confidence: float = Field(ge=0.0, le=1.0)
+    # Which decision engine produced this plan ("template", "llm", or "fallback:<reason>")
+    # - audit provenance, not a security control. See agentic/base.py::DecisionEngine.
+    engine: str = "template"
 
 
 class SessionContext(BaseModel):
@@ -72,6 +75,14 @@ class TrustDecision(BaseModel):
     stage_results: list[StageResult] = []
     executed_actions: list[str] = []
     rationale: str
+    engine: str = "template"
+    # Which CapabilityExecutor ran executed_actions - "simulate" (SimulatedExecutor,
+    # today's only executor) or "production" (ProductionExecutor, a real
+    # deployment-specific backend). None when capability_enforcement never ran
+    # (an earlier stage already rejected the plan), same convention as
+    # trust_level/autonomy_mode/scores above. Provenance, not itself a security
+    # control - same posture as `engine`.
+    executor_mode: Literal["simulate", "production"] | None = None
 
 
 class AuditEntry(BaseModel):

@@ -50,3 +50,12 @@ class EntityHistory:
 
     def count_since(self, entity_id: str, within: timedelta, kind: str | None = None) -> int:
         return len(self.recent(entity_id, kind=kind, within=within))
+
+    def all_events(self, kind: str | None = None) -> list[dict]:
+        """Every event across every entity, optionally filtered by kind - used
+        by BehavioralTrustEngine.refit_from_history() to reconstruct a real
+        observed population without reaching into the private per-entity dict."""
+        events = [event for entity_events in self._events.values() for event in entity_events]
+        if kind is not None:
+            events = [event for event in events if event["kind"] == kind]
+        return events

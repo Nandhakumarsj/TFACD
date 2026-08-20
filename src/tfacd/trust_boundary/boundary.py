@@ -61,18 +61,19 @@ class AdaptiveSemanticTrustBoundary:
         trust_level = self.trust_regulator.trust_level(scores.trust_value)
         autonomy_mode = self.trust_regulator.autonomy_mode(trust_level)
 
-        executed_actions = capability_enforcement.enforce(plan, autonomy_mode, self.policy, self.executor)
+        executed_actions = capability_enforcement.enforce(plan, autonomy_mode, self.policy, self.executor, context)
         accepted = autonomy_mode != "read_only"
 
         return self._finalize(
             plan, session, stage_results, terminal_stage="capability_enforcement", accepted=accepted,
             trust_level=trust_level, autonomy_mode=autonomy_mode, scores=scores, executed_actions=executed_actions,
+            executor_mode=getattr(self.executor, "mode", "simulate"),
         )
 
     def _finalize(
         self, plan: CyberActionPlan, session: SessionContext, stage_results: list[StageResult], *, terminal_stage: str, accepted: bool,
         trust_level: str | None = None, autonomy_mode: str | None = None, scores: TrustScores | None = None,
-        executed_actions: list[str] | None = None,
+        executed_actions: list[str] | None = None, executor_mode: str | None = None,
     ) -> TrustDecision:
         decision = TrustDecision(
             incident_id=plan.incident_id,
@@ -84,6 +85,8 @@ class AdaptiveSemanticTrustBoundary:
             stage_results=stage_results,
             executed_actions=executed_actions or [],
             rationale=plan.rationale,
+            engine=plan.engine,
+            executor_mode=executor_mode,
         )
         decision = output_protection.sanitize_decision(decision)
 
