@@ -9,7 +9,7 @@ import torch
 from tfacd.common.config import load_config
 from tfacd.data.dataset import SequenceDataset
 from tfacd.data.preprocess import load_prepared
-from tfacd.data.sequences import make_sequences
+from tfacd.data.sequences import as_model_input
 from tfacd.federated.common import model_from_metadata
 from tfacd.training.engine import evaluate, predict_all
 from torch.utils.data import DataLoader
@@ -28,7 +28,7 @@ class_names = [str(c) for c in metadata["classes"]]
 prepared = load_prepared(config["data"]["output_dir"])
 seq_len = int(config["data"].get("sequence_length", 1))
 stride = int(config["data"].get("sequence_stride", 1))
-x_test, y_test = make_sequences(prepared.x_test, prepared.y_test, seq_len, stride)
+x_test, y_test = as_model_input(prepared.x_test, prepared.y_test, seq_len, stride)
 test_loader = DataLoader(SequenceDataset(x_test, y_test), batch_size=int(config["training"]["batch_size"]), shuffle=False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

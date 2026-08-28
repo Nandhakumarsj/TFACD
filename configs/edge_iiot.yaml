@@ -2,7 +2,7 @@ seed: 42
 
 data:
   # Change this to the selected DNN CSV on your workstation.
-  raw_csv: "./datasets/Edge_IIoTset/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
+  raw_csv: "./datasets/Edge_IIoT/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
   output_dir: "artifacts/data"
   label_column: "auto"
   attack_type_column: "auto"
@@ -22,9 +22,16 @@ data:
   test_size: 0.15
   validation_size: 0.15
   max_rows: null
-  sequence_length: 1
-  sequence_stride: 1
+  sequence_length: 16
+  sequence_stride: 4
   preserve_input_order: false
+  temporal:
+    # Flow/session windowing is used automatically when sequence_length > 1.
+    timestamp_column: "auto"
+    inactivity_seconds: 30
+    group_columns: null
+    # set null for full file audit (computationally expensive).
+    audit_sample_rows: 50000
 
 model:
   conv_channels: [64, 128]

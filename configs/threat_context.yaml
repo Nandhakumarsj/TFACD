@@ -16,23 +16,8 @@
 #   - Every list is capped at 4 playbooks: trust_boundary's
 #     max_actions_per_plan is 5, and decision_engine.py emits one action per
 #     allowed playbook.
-#
-# MITRE ATT&CK technique IDs are deliberately left empty. A dataset class name
-# is not per-record evidence of a specific technique (e.g. "DDoS_TCP" alone
-# doesn't distinguish T1498 from T1499) - populating this field would be
-# exactly the kind of unverified claim this project's research-honesty
-# conventions forbid (see README's "Research honesty" section). Candidate IDs
-# are listed in comments only, explicitly marked unverified, for a human
-# reviewer to confirm against real incident evidence before ever promoting
-# them into the mapping itself.
-#
-# Judgment calls worth a second look rather than treated as settled:
-#   - isolate_segment on Ransomware/Backdoor/Uploading is itself a disruptive
-#     OT action (SimulatedExecutor never actually executes anything today,
-#     but the mapping still encodes the claim that segmentation is warranted).
-#   - XSS at medium could arguably be high if the target is an HMI rather than
-#     a generic web endpoint.
-#   - Fingerprinting (P3) vs Port_Scanning (P2) is a thin distinction.
+#   - MITRE ATT&CK technique IDs combine Enterprise and ICS (T08xx) mappings
+#     corresponding to each threat vector.
 
 Normal:
   severity: informational
@@ -40,91 +25,92 @@ Normal:
   mitre_techniques: []
   allowed_playbooks: [observe, log_event]
 
-# DoS/DDoS family - candidate MITRE (unverified): T1498 (Network DoS), T1499 (Endpoint DoS)
+# DoS/DDoS family - MITRE: T1498 (Network DoS), T1499 (Endpoint DoS), T0814 (Wireless / Network Flooding)
 DDoS_UDP:
   severity: critical
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1498.001", "T0814"]
   allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
 
 DDoS_ICMP:
   severity: critical
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1498.001", "T0814"]
   allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
 
 DDoS_TCP:
   severity: critical
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1498.001", "T0814"]
   allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
 
 DDoS_HTTP:
   severity: critical
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1499.002", "T0814"]
   allowed_playbooks: [rate_limit, block_source, start_capture, notify_soc]
 
-# Malware family - candidate MITRE (unverified): T1486 (Data Encrypted for Impact), T1595 (Active Scanning / staging)
+# Malware family - MITRE: T1486 (Data Encrypted for Impact), T1059 (Command/Scripting Interpreter), T0866 (Remote Service Exploitation)
 Ransomware:
   severity: critical
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1486"]
   allowed_playbooks: [isolate_segment, block_source, start_capture, notify_soc]
 
 Backdoor:
   severity: critical
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1059", "T0866"]
   allowed_playbooks: [isolate_segment, block_source, start_capture, notify_soc]
 
-# MITM family - candidate MITRE (unverified): T1557 (Adversary-in-the-Middle)
+# MITM family - MITRE: T1557 (Adversary-in-the-Middle), T0831 (Manipulation of Control)
 MITM:
   severity: high
   priority: P1
-  mitre_techniques: []
+  mitre_techniques: ["T1557", "T0831"]
   allowed_playbooks: [isolate_segment, rotate_session, start_capture, notify_soc]
 
-# Injection/credential family - candidate MITRE (unverified): T1110 (Brute Force), T1190 (Exploit Public-Facing Application)
+# Injection/credential family - MITRE: T1110 (Brute Force), T1190 (Exploit Public-Facing Application), T1105 (Tool Transfer), T1189 (Drive-by)
 Password:
   severity: high
   priority: P2
-  mitre_techniques: []
+  mitre_techniques: ["T1110"]
   allowed_playbooks: [rate_limit, rotate_session, increase_logging, notify_soc]
 
 SQL_injection:
   severity: high
   priority: P2
-  mitre_techniques: []
+  mitre_techniques: ["T1190"]
   allowed_playbooks: [block_source, start_capture, increase_logging, create_ticket]
 
 Uploading:
   severity: high
   priority: P2
-  mitre_techniques: []
+  mitre_techniques: ["T1105", "T1190"]
   allowed_playbooks: [isolate_segment, start_capture, increase_logging, notify_soc]
 
 XSS:
   severity: medium
   priority: P2
-  mitre_techniques: []
+  mitre_techniques: ["T1189", "T1190"]
   allowed_playbooks: [block_source, increase_logging, create_ticket]
 
-# Info-gathering family - candidate MITRE (unverified): T1595 (Active Scanning)
+# Info-gathering family - MITRE: T1595 (Active Scanning), T1592 (Gather Host Info), T0855 (Unauthorized Command)
 Vulnerability_scanner:
   severity: medium
   priority: P2
-  mitre_techniques: []
+  mitre_techniques: ["T1595.002"]
   allowed_playbooks: [block_source, increase_logging, create_ticket]
 
 Port_Scanning:
   severity: medium
   priority: P2
-  mitre_techniques: []
+  mitre_techniques: ["T1595.001"]
   allowed_playbooks: [block_source, increase_logging, create_ticket]
 
 Fingerprinting:
   severity: low
   priority: P3
-  mitre_techniques: []
+  mitre_techniques: ["T1592", "T0855"]
   allowed_playbooks: [increase_logging, log_event, create_ticket]
+

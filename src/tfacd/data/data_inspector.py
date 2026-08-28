@@ -10,11 +10,21 @@ from typing import Any
 import pandas as pd
 
 from tfacd.common.config import load_config
+from tfacd.data.temporal import audit_temporal_file
 
 LABEL_CANDIDATES = ["attack_label", "label", "class", "target", "binary_label"]
 ATTACK_TYPE_CANDIDATES = ["attack_type", "attack", "category", "attack_category"]
 TIME_CANDIDATES = ["timestamp", "time", "frame.time", "ts"]
 GROUP_CANDIDATES = ["flow_id", "session_id", "device_id", "sensor", "source"]
+TEMPORAL_GROUP_DEFAULTS = [
+    "ip.src_host",
+    "ip.dst_host",
+    "tcp.srcport",
+    "tcp.dstport",
+    "udp.port",
+    "udp.stream",
+    "ip.proto",
+]
 
 
 def identifier_like_columns(columns: list[str], patterns: list[str]) -> list[str]:
@@ -98,19 +108,90 @@ def inspect_csv(config: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def inspect_temporal(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Profile timestamp validity, flow cardinality, and inter-arrival timing."""
+    data_cfg = config["data"]
+    csv_path = Path(data_cfg["raw_csv"]).expanduser()
+    if not csv_path.exists():
+        return None
+
+    temporal_cfg = data_cfg.get("temporal", {})
+    timestamp = temporal_cfg.get("timestamp_column", data_cfg.get("timestamp_column", "auto"))
+    if timestamp == "auto":
+        header = pd.read_csv(csv_path, nrows=0)
+        timestamp = _find_candidate(list(header.columns), TIME_CANDIDATES)
+    if not timestamp:
+        return {"available": False, "reason": "No timestamp column detected"}
+
+    sample_rows = temporal_cfg.get("audit_sample_rows")
+    group_columns = temporal_cfg.get("group_columns")
+    audit = audit_temporal_file(
+        csv_path,
+        timestamp_column=timestamp,
+        group_columns=group_columns,
+        sample_rows=sample_rows,
+    )
+    payload = audit.to_dict()
+    payload["available"] = True
+    payload["sample_rows"] = sample_rows
+    payload["sequence_length_recommendation"] = (
+        "Use sequence_length=1 unless flow-based windowing is enabled "
+        "(set sequence_length > 1 to activate temporal preprocessing)."
+    )
+    if audit.median_rows_per_flow >= 8:
+        payload["candidate_window_lengths"] = [8, 16, 32]
+    elif audit.median_rows_per_flow >= 4:
+        payload["candidate_window_lengths"] = [4, 8, 16]
+    else:
+        payload["candidate_window_lengths"] = [1]
+    if audit.flows_with_multiple_rows == 0:
+        payload["temporal_warning"] = (
+            "No multi-packet flows detected in the audit sample; keep sequence_length=1."
+        )
+    elif not audit.input_order_non_decreasing:
+        payload["temporal_warning"] = (
+            "Global CSV row order is not chronological (expected for concatenated captures). "
+            "Use flow/session windowing (sequence_length > 1) rather than consecutive-row windows."
+        )
+    else:
+        payload["temporal_warning"] = (
+            "Timestamps and multi-packet flows detected; flow-based sequences are defensible."
+        )
+    return payload
+
+
+def inspect_all(config: dict[str, Any]) -> dict[str, Any]:
+    report = inspect_csv(config)
+    temporal = inspect_temporal(config)
+    if temporal is not None:
+        report["temporal_audit"] = temporal
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/edge_iiot.yaml")
     args = parser.parse_args()
     config = load_config(args.config)
-    report = inspect_csv(config)
+    report = inspect_all(config)
     output_dir = Path(config["data"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "schema_report.json"
     output_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    temporal_path = output_dir / "temporal_audit.json"
+    if "temporal_audit" in report:
+        temporal_path.write_text(
+            json.dumps(report["temporal_audit"], indent=2, default=str),
+            encoding="utf-8",
+        )
     print(json.dumps(report["candidate_columns"], indent=2))
-    print(report["temporal_warning"])
+    if "temporal_audit" in report:
+        print(json.dumps(report["temporal_audit"], indent=2))
+    else:
+        print(report["temporal_warning"])
     print(f"Saved: {output_path.resolve()}")
+    if temporal_path.exists():
+        print(f"Saved: {temporal_path.resolve()}")
 
 
 if __name__ == "__main__":

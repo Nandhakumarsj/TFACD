@@ -43,13 +43,16 @@ class CsvReplaySource:
     def records(self) -> Iterator[dict]:
         emitted = 0
         row_index = 0
-        for chunk in pd.read_csv(self.csv_path, chunksize=self.chunk_size, dtype=str, low_memory=False):
+        max_target_row = max(self.row_indices) if self.row_indices else None
+        for chunk in pd.read_csv(self.csv_path, chunksize=self.chunk_size, dtype=str, engine="python"):
             for record in chunk.to_dict(orient="records"):
                 if self.row_indices is None or row_index in self.row_indices:
                     yield record
                     emitted += 1
                     if self.max_records is not None and emitted >= self.max_records:
                         return
+                if max_target_row is not None and row_index >= max_target_row:
+                    return
                 row_index += 1
 
 

@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader
 
 from tfacd.data.dataset import SequenceDataset
 from tfacd.data.preprocess import load_prepared
-from tfacd.data.sequences import make_sequences
+from tfacd.data.sequences import as_model_input
 from tfacd.federated.common import model_from_metadata
 from tfacd.integrity.aggregation import coordinate_median, trimmed_mean, weighted_average
 from tfacd.integrity.attacks import gaussian_noise, gradual_scaling, label_flip_to_normal, sign_flip
@@ -55,7 +55,7 @@ def _client_train_loader(prepared, output_dir, client_id, seq_len, stride, batch
     y = prepared.y_train[indices]
     if label_transform is not None:
         y = label_transform(y)
-    x_seq, y_seq = make_sequences(x, y, seq_len, stride)
+    x_seq, y_seq = as_model_input(x, y, seq_len, stride)
     return DataLoader(SequenceDataset(x_seq, y_seq), batch_size=batch_size, shuffle=True)
 
 
@@ -103,7 +103,7 @@ def run_benchmark(
     lr = 0.001
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    x_test, y_test = make_sequences(prepared.x_test, prepared.y_test, seq_len, stride)
+    x_test, y_test = as_model_input(prepared.x_test, prepared.y_test, seq_len, stride)
     test_loader = DataLoader(SequenceDataset(x_test, y_test), batch_size=batch_size, shuffle=False)
     criterion = torch.nn.CrossEntropyLoss()
 

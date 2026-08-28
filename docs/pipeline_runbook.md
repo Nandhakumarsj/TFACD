@@ -19,7 +19,7 @@ Prints Python/CUDA/PyTorch versions and runs a smoke matmul on the GPU if availa
 ```powershell
 python scripts/inspect_dataset.py --config configs/edge_iiot.yaml
 ```
-Reads the raw CSV directly (no preprocessing yet). Prints schema, class distribution, leakage warnings (identifier-like columns, near-duplicate rows), and whether a defensible row ordering exists for temporal claims. **Read this output before changing `sequence_length` in the config** - see README's "Important scientific constraint".
+Reads the raw CSV directly (no preprocessing yet). Writes `artifacts/data/schema_report.json` and `artifacts/data/temporal_audit.json` with schema, class distribution, leakage warnings, flow/session statistics, and candidate temporal window lengths. **Read this output before changing `sequence_length` in the config** - see README's "Important scientific constraint".
 
 ## 2. Preprocessing
 

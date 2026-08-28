@@ -18,15 +18,25 @@ dependencies = [
   "rich>=13.7,<15",
   "cryptography>=43,<47",
   "sentence-transformers>=3,<4",
+  # PyTorch CPU fallback (override with CUDA wheel at install time - see README)
+  "torch>=2.3",
+  "torchvision>=0.18",
+  "torchaudio>=2.3",
 ]
 
 [project.optional-dependencies]
 flower = ["flwr[simulation]>=1.30,<1.31"]
 dev = ["pytest>=8,<10", "ruff>=0.8,<1", "mypy>=1.13,<2"]
 agentic-llm = ["langgraph>=0.2,<0.3", "langchain-core>=0.3,<0.4", "langchain-ollama>=0.2,<0.3"]
+# Visualisation helpers (training curves, confusion matrix)
+viz = ["matplotlib>=3.9,<4", "seaborn>=0.13,<1"]
+# Optional model-explanation backends (soft deps; code falls back gracefully if absent)
+explainability = ["shap>=0.46", "lime>=0.2"]
+# Optional MQTT streaming source
+mqtt = ["paho-mqtt>=2.1"]
 
 [project.scripts]
-tfacd-inspect = "tfacd.data.inspect:main"
+tfacd-inspect = "tfacd.data.data_inspector:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tfacd"]

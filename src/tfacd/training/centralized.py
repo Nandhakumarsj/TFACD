@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from tfacd.data.dataset import SequenceDataset
 from tfacd.data.preprocess import load_prepared
-from tfacd.data.sequences import make_sequences
+from tfacd.data.sequences import as_model_input
 from tfacd.models.cnn_bilstm import CNNBiLSTM
 from tfacd.training.engine import class_weights, evaluate, predict_all, train_one_epoch
 
@@ -35,9 +35,9 @@ def run_centralized(config: dict[str, Any]) -> Path:
     prepared = load_prepared(config["data"]["output_dir"])
     seq_len = int(config["data"].get("sequence_length", 1))
     stride = int(config["data"].get("sequence_stride", 1))
-    x_train, y_train = make_sequences(prepared.x_train, prepared.y_train, seq_len, stride)
-    x_val, y_val = make_sequences(prepared.x_val, prepared.y_val, seq_len, stride)
-    x_test, y_test = make_sequences(prepared.x_test, prepared.y_test, seq_len, stride)
+    x_train, y_train = as_model_input(prepared.x_train, prepared.y_train, seq_len, stride)
+    x_val, y_val = as_model_input(prepared.x_val, prepared.y_val, seq_len, stride)
+    x_test, y_test = as_model_input(prepared.x_test, prepared.y_test, seq_len, stride)
 
     cfg = config["training"]
     batch_size = int(cfg["batch_size"])
