@@ -1,7 +1,6 @@
 seed: 42
 
 data:
-  # Change this to the selected DNN CSV on your workstation.
   raw_csv: "./datasets/Edge_IIoT/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
   output_dir: "artifacts/data"
   label_column: "auto"
