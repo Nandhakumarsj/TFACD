@@ -58,3 +58,58 @@ def enforce(plan: CyberActionPlan, autonomy_mode: str, policy: dict[str, Any], e
         if executor.execute(action):
             executed.append(action.capability)
     return executed
+
+
+# --- Real & Pluggable Executor Factory ---
+
+def build_executor_from_config(config: dict) -> "CapabilityExecutor":
+    """Factory: reads executor config and returns the appropriate executor.
+
+    Accepts two config shapes:
+    1. Flat:   ``{"mode": "simulate" | "production" | "command" | "webhook", ...}``
+    2. Nested: ``{"capability_execution": {"driver": "command" | "webhook" | ..., "dry_run": True, ...}}``
+
+    The nested shape is what the unit-test suite uses; the flat shape is what
+    ``configs/edge_iiot.yaml``'s ``trust_boundary.executor`` block uses.
+    """
+    if not config:
+        return SimulatedExecutor()
+
+    # --- Normalise both shapes into (driver, sub_config) ---
+    if "capability_execution" in config:
+        sub = config["capability_execution"]
+        driver = sub.get("driver", "simulate")
+    else:
+        sub = config
+        driver = sub.get("mode", "simulate")
+
+    dry_run: bool = bool(sub.get("dry_run", False))
+
+    if driver == "production":
+        from tfacd.trust_boundary.production_executor import ProductionExecutor
+        return ProductionExecutor()
+
+    if driver in ("command", "pluggable"):
+        from tfacd.trust_boundary.executors import CommandExecutor
+        return CommandExecutor(dry_run=dry_run)
+
+    if driver == "webhook":
+        from tfacd.trust_boundary.executors import WebhookExecutor
+        url = sub.get("webhook_url", "")
+        if not url:
+            raise ValueError("webhook_url is required for driver='webhook'")
+        return WebhookExecutor(webhook_url=url, dry_run=dry_run)
+
+    # Default: simulate
+    return SimulatedExecutor()
+
+
+# Re-export real executor classes so importers can reach them from one place.
+try:
+    from tfacd.trust_boundary.executors import (  # noqa: F401  # pragma: no cover
+        CommandExecutor,
+        WebhookExecutor,
+        PluggableCapabilityExecutor,
+    )
+except ImportError:
+    pass  # executors.py not yet on disk – callers that need it will import directly.

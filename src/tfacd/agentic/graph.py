@@ -94,14 +94,15 @@ class DecisionState(TypedDict):
     proposed: LLMProposedPlan | None
     validation_errors: list[str]
     plan: CyberActionPlan | None
+    rag_context: str | None
 
 
 def initial_state(
-    alert: IDSAlert, context: ThreatContext, *, repeat_activity: bool, repeat_window_minutes: int, max_attempts: int
+    alert: IDSAlert, context: ThreatContext, *, repeat_activity: bool, repeat_window_minutes: int, max_attempts: int, rag_context: str | None = None
 ) -> DecisionState:
     return DecisionState(
         alert=alert, context=context, repeat_activity=repeat_activity, repeat_window_minutes=repeat_window_minutes,
-        attempt=0, max_attempts=max_attempts, proposed=None, validation_errors=[], plan=None,
+        attempt=0, max_attempts=max_attempts, proposed=None, validation_errors=[], plan=None, rag_context=rag_context,
     )
 
 
@@ -117,6 +118,8 @@ def build_human_prompt(state: DecisionState) -> str:
         f"mitre_techniques: {context.mitre_techniques or 'none listed'}",
         f"allowed_playbooks: {context.allowed_playbooks}",
     ]
+    if state.get("rag_context"):
+        lines.append(f"security_knowledge_base:\n{state['rag_context']}")
     if state["repeat_activity"]:
         lines.append(f"repeat_activity: this source was seen again within the last {state['repeat_window_minutes']} minutes")
     if state["validation_errors"]:

@@ -12,17 +12,19 @@
 Deliverables:
 
 - `artifacts/data/schema_report.json`
+- `artifacts/data/temporal_audit.json`
 - label distribution
 - missing-value report
 - duplicate count
 - candidate label/timestamp/group columns
 - leakage warnings
-- evidence on whether temporal ordering exists
+- flow/session statistics (median packets per flow, inter-arrival timing)
 
 Decision:
 
-- If the selected DNN CSV is shuffled or lacks time/group order, set sequence length to 1.
-- If time/order is defensible, create grouped sliding windows and compare sequence lengths.
+- Keep `sequence_length: 1` for the row baseline when comparing against prior results.
+- If the temporal audit shows multi-packet flows, set `sequence_length > 1` to activate flow/session windowing in preprocessing (never use consecutive CSV row windows).
+- Compare candidate window lengths from the audit before claiming temporal learning.
 
 ## Gate 2 — Centralized baseline
 

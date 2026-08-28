@@ -1,8 +1,50 @@
-# TFACD Phase-I Starter
+# TFACD Quickstart
 
 **Trustworthy Federated Agentic Cyber Defense for IIoT**
 
 This repository starts with the **training plane** and leaves stable interfaces for the runtime plane.
+
+---
+
+## 🐳 Docker Quick-Start
+
+> Full guide: [DOCKER_GUIDE.md](DOCKER_GUIDE.md)
+
+```bash
+# Build both planes
+docker compose build training runtime
+
+# Run full training pipeline (Gate 0–5)
+docker compose run --rm training python scripts/inspect_dataset.py --config configs/edge_iiot.yaml
+docker compose run --rm training python scripts/train_centralized.py  --config configs/edge_iiot.yaml
+docker compose run --rm training python scripts/create_partitions.py  --config configs/edge_iiot.yaml
+docker compose run --rm flower                                         # FL simulation + FTIL
+docker compose run --rm integrity                                      # attack benchmark
+docker compose run --rm training python scripts/certify_model.py      --config configs/edge_iiot.yaml
+
+# Run runtime plane (streaming + agentic engine)
+docker compose run --rm runtime
+```
+
+**Dependency groups** (installed automatically in Docker, or manually with pip):
+
+| Group | Packages |
+|-------|----------|
+| core (always) | numpy, pandas, scikit-learn, torch+CUDA, pydantic, cryptography, sentence-transformers, … |
+| `[flower]` | flwr[simulation] |
+| `[agentic-llm]` | langgraph, langchain-core, langchain-ollama |
+| `[viz]` | matplotlib, seaborn |
+| `[explainability]` | shap, lime *(soft deps – fall back gracefully)* |
+| `[mqtt]` | paho-mqtt *(soft dep – only for MQTT stream source)* |
+
+Install everything at once (native dev):
+
+```powershell
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install -e ".[dev,flower,agentic-llm,viz,explainability,mqtt]"
+```
+
+---
 
 ## Development order
 
@@ -20,7 +62,13 @@ This repository starts with the **training plane** and leaves stable interfaces 
 
 ## Important scientific constraint
 
-A CNN-BiLSTM only has a meaningful temporal interpretation when row order, timestamps, or flow/session grouping are preserved. The selected DNN CSV may be shuffled. Run the inspector first. If no defensible ordering exists, use `sequence_length: 1` as the baseline and do not claim temporal learning until packet/flow ordering is reconstructed.
+A CNN-BiLSTM only has a meaningful temporal interpretation when row order, timestamps, or flow/session grouping are preserved. The DNN CSV is a concatenation of capture-level rows (63 columns including `frame.time`); global row order is **not** chronological, but flow/session windowing is defensible.
+
+```powershell
+python scripts/inspect_dataset.py --config configs/edge_iiot.yaml
+```
+
+This writes `artifacts/data/schema_report.json` and `artifacts/data/temporal_audit.json` (flow counts, inter-arrival timing, candidate window lengths). Keep `sequence_length: 1` for the row baseline. Set `sequence_length > 1` to activate flow-based temporal preprocessing automatically.
 
 ## Windows + Quadro P5000
 
@@ -44,7 +92,7 @@ Edit `configs/edge_iiot.yaml`:
 
 ```yaml
 data:
-  raw_csv: "./datasets/Edge-IIoT/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
+  raw_csv: "./datasets/Edge_IIoT/Selected dataset for ML and DL/DNN-EdgeIIoT-dataset.csv"
 ```
 
 Then:

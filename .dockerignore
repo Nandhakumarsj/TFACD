@@ -1,0 +1,41 @@
+.git
+.gitignore
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment (Docker uses its own venv inside the image)
+.venv/
+venv/
+env/
+
+# Scratch / local artifacts (re-created by the container)
+artifacts/
+
+# Large dataset files (mounted as a volume at runtime – see docker-compose.yml)
+datasets/
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Docs and notebooks that aren't needed at runtime
+docs/
+*.ipynb
+scratch_pdf_pages/
+pdf_full_text.txt
+pptx_dump.txt
+pptx_tables_full.txt
+project_submission/
+
+# Sensitive files
+*.pem
+*.key
+*.env

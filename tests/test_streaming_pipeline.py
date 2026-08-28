@@ -125,6 +125,9 @@ def test_golden_against_real_heldout_rows():
         pytest.skip("real training artifacts not present")
 
     config = load_config("configs/edge_iiot.yaml")
+    if not Path(config["data"]["raw_csv"]).exists():
+        pytest.skip(f"raw CSV dataset not present at {config['data']['raw_csv']}")
+
     config["streaming"] = {
         "model_path": str(checkpoint),
         "require_signature": False,

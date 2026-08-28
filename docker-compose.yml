@@ -1,0 +1,76 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# TFACD – docker-compose convenience wrapper
+#
+# Requires:
+#   - NVIDIA Container Toolkit installed on the host
+#   - docker compose v2 (plugin) or docker-compose v1 ≥ 1.29
+#   - datasets/ volume mounted at ./datasets (see .env)
+#
+# Usage:
+#   docker compose build training
+#   docker compose run --rm training python scripts/train_centralized.py --config configs/edge_iiot.yaml
+#   docker compose run --rm runtime  python scripts/run_streaming_demo.py  --config configs/edge_iiot.yaml
+# ---------------------------------------------------------------------------
+
+x-common: &common
+  build:
+    context: .
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+  volumes:
+    # Raw dataset (read-only)
+    - ./datasets:/app/datasets:ro
+    # Artifacts
+    - ./artifacts:/app/artifacts
+
+# ---- Training plane -------------------------------------------------------
+services:
+  training:
+    <<: *common
+    build:
+      context: .
+      target: training
+    container_name: tfacd_training
+    command: ["python", "scripts/train_centralized.py", "--config", "configs/edge_iiot.yaml"]
+
+  flower:
+    <<: *common
+    build:
+      context: .
+      target: training
+    container_name: tfacd_flower
+    command: ["flwr", "run", ".", "local-simulation", "--run-config",
+              "num-server-rounds=3 use-ftil=true"]
+
+  integrity:
+    <<: *common
+    build:
+      context: .
+      target: training
+    container_name: tfacd_integrity
+    command: ["python", "scripts/run_integrity_benchmark.py",
+              "--config", "configs/edge_iiot.yaml"]
+
+# ---- Runtime plane --------------------------------------------------------
+  runtime:
+    <<: *common
+    build:
+      context: .
+      target: runtime
+    container_name: tfacd_runtime
+    ports:
+      - "11434:11434"   # – only if Ollama runs inside the container
+    command: ["python", "scripts/run_streaming_demo.py",
+              "--config", "configs/edge_iiot.yaml"]
+    depends_on:
+      - training
