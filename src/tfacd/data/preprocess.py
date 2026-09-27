@@ -79,6 +79,25 @@ def _feature_columns(
     return x.replace([np.inf, -np.inf], np.nan), sorted(set(auto_drop))
 
 
+def _coerce_numeric_like_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Convert columns that are numeric-like in content to numeric dtypes before
+    feature selection. This avoids the bug where `pd.read_csv(..., dtype=str)` turns
+    every traffic metric into a string and then `ColumnTransformer` treats them as
+    categorical values instead of real numeric features.
+    """
+    out = frame.copy()
+    for column in list(out.columns):
+        if pd.api.types.is_numeric_dtype(out[column]):
+            continue
+        non_null = out[column].dropna()
+        if non_null.empty:
+            continue
+        coerced = pd.to_numeric(non_null, errors="coerce")
+        if coerced.notna().all():
+            out[column] = pd.to_numeric(out[column], errors="coerce")
+    return out
+
+
 def _build_transformer(x_train: pd.DataFrame) -> tuple[ColumnTransformer, list[str], list[str]]:
     numeric = list(x_train.select_dtypes(include=["number", "bool"]).columns)
     categorical = [column for column in x_train.columns if column not in numeric]
@@ -223,6 +242,47 @@ def _preprocess_row_based(config: dict[str, Any], frame: pd.DataFrame) -> Prepar
     )
 
 
+def _split_temporal_ids_by_session(
+    seq_meta: pd.DataFrame,
+    test_size: float,
+    val_size: float,
+    seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split temporal windows at the session boundary to avoid train/test leakage.
+    Windows from the same session stay together in exactly one split.
+    """
+    session_ids = seq_meta["session_id"].drop_duplicates().to_numpy()
+    if len(session_ids) == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    rng = np.random.default_rng(seed)
+    shuffled = session_ids.copy()
+    rng.shuffle(shuffled)
+
+    total_sessions = len(shuffled)
+    test_count = max(1, int(round(total_sessions * test_size))) if total_sessions > 1 else 1
+    val_count = max(1, int(round(total_sessions * val_size))) if total_sessions > 2 else 0
+    if total_sessions <= 3:
+        train_count = max(1, total_sessions - test_count - val_count)
+    else:
+        train_count = total_sessions - test_count - val_count
+    if train_count <= 0:
+        train_count = 1
+    if test_count + val_count >= total_sessions:
+        val_count = max(0, total_sessions - test_count - 1)
+        train_count = total_sessions - test_count - val_count
+
+    test_sessions = set(shuffled[:test_count])
+    train_sessions = set(shuffled[test_count:test_count + val_count])
+    val_sessions = set(shuffled[test_count + val_count:])
+
+    by_session = {session: seq_meta.index[seq_meta["session_id"] == session].to_numpy(dtype=np.int64) for session in shuffled}
+    train_ids = np.concatenate([by_session[s] for s in train_sessions]) if train_sessions else np.array([], dtype=np.int64)
+    val_ids = np.concatenate([by_session[s] for s in val_sessions]) if val_sessions else np.array([], dtype=np.int64)
+    test_ids = np.concatenate([by_session[s] for s in test_sessions]) if test_sessions else np.array([], dtype=np.int64)
+    return train_ids, val_ids, test_ids
+
+
 def _preprocess_temporal(config: dict[str, Any], frame: pd.DataFrame) -> PreparedData:
     cfg = config["data"]
     temporal_cfg = cfg.get("temporal", {})
@@ -258,19 +318,21 @@ def _preprocess_temporal(config: dict[str, Any], frame: pd.DataFrame) -> Prepare
     seed = int(config.get("seed", 42))
     test_size = float(cfg.get("test_size", 0.15))
     val_size = float(cfg.get("validation_size", 0.15))
-    seq_ids = np.arange(len(seq_meta))
+    train_ids, val_ids, test_ids = _split_temporal_ids_by_session(seq_meta, test_size, val_size, seed=seed)
 
-    trainval_ids, test_ids, y_trainval, y_test = train_test_split(
-        seq_ids, y, test_size=test_size, random_state=seed, stratify=y
-    )
-    relative_val = val_size / (1.0 - test_size)
-    train_ids, val_ids, _, _ = train_test_split(
-        trainval_ids,
-        y_trainval,
-        test_size=relative_val,
-        random_state=seed,
-        stratify=y_trainval,
-    )
+    if len(train_ids) == 0 or len(val_ids) == 0 or len(test_ids) == 0:
+        seq_ids = np.arange(len(seq_meta))
+        trainval_ids, test_ids, y_trainval, y_test = train_test_split(
+            seq_ids, y, test_size=test_size, random_state=seed, stratify=y
+        )
+        relative_val = val_size / (1.0 - test_size)
+        train_ids, val_ids, _, _ = train_test_split(
+            trainval_ids,
+            y_trainval,
+            test_size=relative_val,
+            random_state=seed,
+            stratify=y_trainval,
+        )
 
     features, _ = _feature_columns(frame, cfg, label_col, attack_type, target_col)
     train_rows = np.unique(window_indices[train_ids].reshape(-1))
@@ -325,9 +387,10 @@ def preprocess(config: dict[str, Any]) -> PreparedData:
     cfg = config["data"]
     raw_path = Path(cfg["raw_csv"])
     chunks = []
-    for chunk in pd.read_csv(raw_path, nrows=cfg.get("max_rows"), dtype=str, chunksize=100000):
+    for chunk in pd.read_csv(raw_path, nrows=cfg.get("max_rows"), low_memory=False, chunksize=100000):
         chunks.append(chunk)
     frame = pd.concat(chunks, ignore_index=True)
+    frame = _coerce_numeric_like_columns(frame)
 
     seq_len = int(cfg.get("sequence_length", 1))
     if seq_len > 1:

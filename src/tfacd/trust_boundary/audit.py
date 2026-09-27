@@ -14,6 +14,13 @@ def _canonical_bytes(data: dict) -> bytes:
     return json.dumps(data, sort_keys=True, default=str).encode("utf-8")
 
 
+def _canonical_timestamp(value: datetime | str) -> str:
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class AuditLogger:
     """Hash-chained append-only audit trail - tamper-evident, not blockchain or
     truly immutable. Each entry embeds the full TrustDecision, which is the
@@ -34,13 +41,19 @@ class AuditLogger:
 
     def append(self, decision: TrustDecision, agent_id: str | None = None) -> AuditEntry:
         self.sequence += 1
-        # agent_id is provenance metadata, not decision content - deliberately
-        # excluded from the hashed payload so existing chains stay verifiable.
+        timestamp = datetime.now(timezone.utc)
+        provenance = {
+            "sequence": self.sequence,
+            "timestamp": _canonical_timestamp(timestamp),
+            "incident_id": decision.incident_id,
+            "agent_id": agent_id,
+        }
         decision_dict = decision.model_dump(mode="json")
-        entry_hash = chain_hash(self.last_hash, _canonical_bytes(decision_dict))
+        payload = {"provenance": provenance, "decision": decision_dict}
+        entry_hash = chain_hash(self.last_hash, _canonical_bytes(payload))
         entry = AuditEntry(
             sequence=self.sequence,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=timestamp,
             incident_id=decision.incident_id,
             agent_id=agent_id,
             entry_hash=entry_hash,
@@ -61,7 +74,14 @@ def verify_chain(path: str | Path) -> tuple[bool, int | None]:
         if not line.strip():
             continue
         entry = json.loads(line)
-        expected = chain_hash(previous_hash, _canonical_bytes(entry["decision"]))
+        provenance = {
+            "sequence": entry["sequence"],
+            "timestamp": _canonical_timestamp(entry["timestamp"]),
+            "incident_id": entry["incident_id"],
+            "agent_id": entry.get("agent_id"),
+        }
+        payload = {"provenance": provenance, "decision": entry["decision"]}
+        expected = chain_hash(previous_hash, _canonical_bytes(payload))
         if expected != entry["entry_hash"] or entry["previous_hash"] != previous_hash:
             return False, entry["sequence"]
         previous_hash = entry["entry_hash"]

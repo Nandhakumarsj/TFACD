@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ parser.add_argument("--audit-log", default=DEFAULT_AUDIT_LOG)
 parser.add_argument("--output", default="artifacts/trust_boundary/security_dashboard.html")
 parser.add_argument("--top-n", type=int, default=3)
 parser.add_argument("--min-scored", type=int, default=2, help="minimum scored entries for an agent to appear in top/bottom rankings")
+parser.add_argument("--analytics-report", default="artifacts/analytics/multi_agent_validation.json", help="optional multi-agent validation JSON")
 args = parser.parse_args()
 
 
@@ -46,7 +48,46 @@ def _agent_list_items(summaries: list[AgentKPISummary]) -> str:
     return "".join(f"<li>{s.agent_id} - mean trust {s.mean_trust_value:.3f} ({s.num_scored} scored entries)</li>" for s in summaries)
 
 
-def render_html(report: KPIReport, audit_log_path: str, top_n: int, min_scored: int) -> str:
+def _load_analytics(path: str) -> dict:
+  report_path = Path(path)
+  if not report_path.exists():
+    return {}
+  return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def _analytics_section(analytics: dict) -> str:
+  if not analytics:
+    return "<h2>Multi-agent analytics</h2><p class=\"caveat\">No analytics report supplied.</p>"
+  reputation_rows = "".join(
+    f"<tr><td>{item['agent_id']}</td><td>{item['reputation_score']:.3f}</td>"
+    f"<td>{item['num_interactions']}</td><td>{item['num_violations']}</td></tr>"
+    for item in analytics.get("reputation", [])
+  )
+  agent_rows = "".join(
+    f"<tr><td>{item['agent_id']}</td><td>{item['num_interactions']}</td>"
+    f"<td>{item['num_scored']}</td><td>{item['acceptance_rate']:.1%}</td>"
+    f"<td>{item['mean_trust_value']:.3f}</td></tr>"
+    for item in analytics.get("kpi", {}).get("per_agent", [])
+    if item.get("mean_trust_value") is not None
+  )
+  feedback = analytics.get("feedback", {})
+  validation = analytics.get("threshold_validation", {})
+  best = (analytics.get("agentic_optimizer") or [None])[0]
+  optimizer_text = "unavailable"
+  if best:
+    optimizer_text = f"weights={best['weights']}, thresholds={best['thresholds']}, F1={best['f1_score']:.3f}"
+  return f"""
+<h2>Multi-agent trust analytics</h2>
+<p class=\"caveat\">Engine={analytics.get('configured_engine')} / model={analytics.get('llm_model')}; agents={len(analytics.get('agent_ids', []))}; provenance={', '.join(analytics.get('engine_provenance', []))}</p>
+<table><tr><th>Agent</th><th>Interactions</th><th>Scored</th><th>Acceptance</th><th>Mean trust</th></tr>{agent_rows}</table>
+<h3>Cross-agent reputation</h3>
+<table><tr><th>Agent</th><th>Reputation</th><th>Interactions</th><th>Violations</th></tr>{reputation_rows}</table>
+<p class=\"caveat\">Feedback records={feedback.get('records', 0)}; synthetic fixture={feedback.get('synthetic_fixture', False)}; threshold validation ready={validation.get('ready', False)} ({validation.get('num_labeled_decisions', 0)} labeled decisions). Live thresholds are not changed automatically.</p>
+<p class=\"caveat\">Best ASTB optimizer candidate: {optimizer_text}</p>
+"""
+
+
+def render_html(report: KPIReport, audit_log_path: str, top_n: int, min_scored: int, analytics: dict) -> str:
     generated_at = datetime.now(timezone.utc).isoformat()
     dist = report.trust_level_distribution
     dist_rows = "".join(
@@ -107,13 +148,15 @@ def render_html(report: KPIReport, audit_log_path: str, top_n: int, min_scored: 
   <div><h3>Top {top_n}</h3><ol>{_agent_list_items(report.top_agents)}</ol></div>
   <div><h3>Bottom {top_n}</h3><ol>{_agent_list_items(report.bottom_agents)}</ol></div>
 </div>
+{_analytics_section(analytics)}
 </body>
 </html>
 """
 
 
 report = compute_kpis(args.audit_log, top_n=args.top_n, min_scored=args.min_scored)
-html = render_html(report, str(args.audit_log), args.top_n, args.min_scored)
+analytics = _load_analytics(args.analytics_report)
+html = render_html(report, str(args.audit_log), args.top_n, args.min_scored, analytics)
 
 output_path = Path(args.output)
 output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,4 +166,6 @@ print(
     f"entries={report.num_entries} acceptance_rate={_pct(report.overall_acceptance_rate)} "
     f"hard_rejected={report.trust_level_distribution['hard_rejected']} agents={len(report.per_agent)}"
 )
+if analytics:
+    print(f"multi_agent_agents={len(analytics.get('agent_ids', []))} analytics={args.analytics_report}")
 print(f"Saved: {output_path.resolve()}")

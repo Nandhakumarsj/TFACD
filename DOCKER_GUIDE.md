@@ -198,7 +198,9 @@ python -m pytest tests/ -v
 docker compose run --rm training python -m pytest tests/ -v
 ```
 
-276 tests should pass, 1 skipped (Ollama integration – requires live Ollama).
+The current baseline is 281 passed, 1 skipped (Ollama integration - requires
+live Ollama). Re-run the command after dependency or runtime changes rather
+than treating this count as a permanent contract.
 
 ---
 

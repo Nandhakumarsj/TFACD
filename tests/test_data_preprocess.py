@@ -89,6 +89,62 @@ def test_temporal_preprocess_builds_3d_windows(tmp_path):
     assert metadata["sequence_length"] == 2
 
 
+def test_numeric_features_are_coerced_before_transformer(tmp_path):
+    csv_path = tmp_path / "numeric_features.csv"
+    pd.DataFrame(
+        {
+            "duration": [0.5, 1.1, 2.2, 3.3, 0.9, 1.4],
+            "pkt_size": [64, 128, 96, 55, 77, 90],
+            "sensor_type": ["temp", "temp", "flow", "flow", "temp", "flow"],
+            "Attack_label": [0, 1, 0, 1, 0, 1],
+        }
+    ).to_csv(csv_path, index=False)
+    config = _write_config(tmp_path, csv_path)
+    config["data"]["label_column"] = "Attack_label"
+    config["data"]["attack_type_column"] = "auto"
+
+    result = preprocess(config)
+    metadata = json.loads((Path(config["data"]["output_dir"]) / "metadata.json").read_text())
+
+    assert metadata["numeric_columns"] == ["duration", "pkt_size"]
+    assert "sensor_type" in metadata["categorical_columns"]
+    assert result.x_train.dtype.kind == "f"
+
+
+def test_temporal_splits_are_session_safe(tmp_path):
+    csv_path = tmp_path / "session_safe.csv"
+    rows = []
+    for session in range(4):
+        for i in range(6):
+            rows.append(
+                {
+                    "frame.time": f"2024-01-01 00:00:{session:02d}.{i:02d}",
+                    "ip.src_host": "10.0.0.1",
+                    "ip.dst_host": "10.0.0.2",
+                    "tcp.srcport": 1000 + i,
+                    "tcp.dstport": 80,
+                    "ip.proto": 6,
+                    "pkt_size": float(i + session),
+                    "Attack_type": "Normal" if session % 2 == 0 else "DDoS_TCP",
+                }
+            )
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    config = _write_config(tmp_path, csv_path, sequence_length=3)
+
+    train_ids, val_ids, test_ids = __import__("tfacd.data.preprocess", fromlist=["_split_temporal_ids_by_session"])._split_temporal_ids_by_session(
+        __import__("tfacd.data.preprocess", fromlist=["_split_temporal_ids_by_session"]).build_sequence_index(
+            pd.read_csv(csv_path), sequence_length=3, stride=1, timestamp_column="frame.time", group_columns=None, inactivity_seconds=30.0, label_column="Attack_type"
+        )[0],
+        test_size=0.25,
+        val_size=0.25,
+        seed=42,
+    )
+
+    assert set(train_ids).isdisjoint(set(val_ids))
+    assert set(train_ids).isdisjoint(set(test_ids))
+    assert set(val_ids).isdisjoint(set(test_ids))
+
+
 def test_inspect_temporal_on_flow_csv(tmp_path):
     csv_path = tmp_path / "flows.csv"
     _flow_frame().to_csv(csv_path, index=False)

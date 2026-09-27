@@ -47,3 +47,19 @@ def test_logger_resumes_chain_across_instances(tmp_path):
 
     ok, _ = verify_chain(path)
     assert ok
+
+
+def test_tamper_in_provenance_fields_is_detected(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    logger = AuditLogger(path)
+    logger.append(make_decision("inc-0"), agent_id="agent-a")
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[0])
+    tampered["agent_id"] = "agent-b"
+    lines[0] = json.dumps(tampered)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    ok, bad_sequence = verify_chain(path)
+    assert not ok
+    assert bad_sequence == 1
