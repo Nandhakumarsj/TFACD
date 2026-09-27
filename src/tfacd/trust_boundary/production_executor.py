@@ -95,8 +95,8 @@ class ProductionExecutor:
             return self._rotate_session(action)
         if action.capability in _LOG_ONLY_CAPABILITIES:
             return self._log_only(action)
-        logger.warning("ProductionExecutor has no backend for capability=%s - falling back to simulated logging", action.capability)
-        return self._fallback_to_simulated(action)
+        logger.warning("ProductionExecutor has no backend for capability=%s - refusing to execute in production mode", action.capability)
+        return False
 
     # ---- safety rail ----
 
@@ -132,8 +132,8 @@ class ProductionExecutor:
         if self.system == "Linux":
             return self._linux_network_action(action, target)
 
-        logger.warning("ProductionExecutor: no real backend for system=%s - falling back to simulated logging", self.system)
-        return self._fallback_to_simulated(action)
+        logger.warning("ProductionExecutor: no real backend for system=%s - refusing to execute in production mode", self.system)
+        return False
 
     # ---- Windows backend: netsh advfirewall ----
 
@@ -144,8 +144,8 @@ class ProductionExecutor:
         if action.capability == "rate_limit":
             # No reliable built-in Windows CLI equivalent to a Linux tc/nft
             # rate limiter - documented gap, not a fake implementation.
-            logger.warning("ProductionExecutor: rate_limit has no Windows backend - falling back to simulated logging")
-            return self._fallback_to_simulated(action)
+            logger.warning("ProductionExecutor: rate_limit has no Windows backend - refusing to execute in production mode")
+            return False
 
         rule_name = self._windows_rule_name(action, target)
         args = ["netsh", "advfirewall", "firewall", "add", "rule", f"name={rule_name}", "dir=in", "action=block", f"remoteip={target}"]
@@ -244,12 +244,8 @@ class ProductionExecutor:
         logger.info("ProductionExecutor executed: %s", record)
 
     def _fallback_to_simulated(self, action: CyberAction) -> bool:
-        from tfacd.trust_boundary.capability_enforcement import SimulatedExecutor
-
-        if self._simulated_fallback is None:
-            self._simulated_fallback = SimulatedExecutor()
         logger.warning(
-            "ProductionExecutor falling back to SIMULATED execution for capability=%s target=%s - no real backend available",
+            "ProductionExecutor refusing to execute capability=%s target=%s in production mode: no real backend available",
             action.capability, action.target,
         )
-        return self._simulated_fallback.execute(action)
+        return False

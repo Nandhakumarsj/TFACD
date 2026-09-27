@@ -38,14 +38,14 @@ def test_windows_block_source_builds_netsh_command_and_records_it(tmp_path):
     assert record["backend"] == "windows_netsh"
 
 
-def test_windows_rate_limit_has_no_backend_and_falls_back_to_simulated():
+def test_windows_rate_limit_has_no_backend_and_fails_closed():
     executor, runner = make_executor("Windows")
     action = CyberAction(capability="rate_limit", target="203.0.113.5")
 
     result = executor.execute(action)
 
-    assert result is True  # SimulatedExecutor always "succeeds"
-    assert runner.calls == []  # no real command was ever built
+    assert result is False
+    assert runner.calls == []
 
 
 def test_linux_block_source_uses_nftables_when_available(tmp_path, monkeypatch):
@@ -141,13 +141,13 @@ def test_low_risk_capability_writes_real_record_no_subprocess_call(tmp_path):
     assert record["backend"] == "log_only"
 
 
-def test_unknown_capability_falls_back_to_simulated():
+def test_unknown_capability_fails_closed():
     executor, runner = make_executor("Linux")
     action = CyberAction(capability="totally_unknown_capability", target="plc-01")
 
     result = executor.execute(action)
 
-    assert result is True
+    assert result is False
     assert runner.calls == []
 
 

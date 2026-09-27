@@ -1,5 +1,10 @@
 # Phase-I implementation gates
 
+This document defines the correctness-first Phase-I baseline. Phase-II
+adaptive trust learning, broader autonomy loops, and speculative runtime
+optimization remain deferred research extensions; they must not be presented
+as live ground truth or enabled implicitly by the Phase-I pipeline.
+
 ## Gate 0 — Environment
 
 - Python 3.11
@@ -83,3 +88,11 @@ Metrics:
 ## Gate 6 — Runtime plane
 
 Starts only after Gate 5. The certified model's prediction schema is the contract consumed by the Threat Context Generator.
+
+## Phase-I completion evidence
+
+The repository's current Python 3.11 environment passes the full regression
+suite with 281 passed tests and 1 skipped Ollama integration test. Warnings
+from optional dependencies are reported by pytest but do not change the gate
+status. Re-run `python -m pytest -q` after changes before claiming the baseline
+remains complete.

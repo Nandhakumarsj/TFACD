@@ -44,12 +44,14 @@ def test_happy_path_executes_actions(tmp_path):
     plan = CyberActionPlan(
         incident_id="i1", confidence=0.7,
         rationale="Medium severity Port_Scanning detected; recommending block_source, increase_logging for investigation and containment.",
-        actions=[CyberAction(capability="block_source", target="plc-01"), CyberAction(capability="increase_logging", target="plc-01")],
+        actions=[CyberAction(capability="block_source", target="10.0.0.5"), CyberAction(capability="increase_logging", target="plc-01")],
     )
     decision = build_boundary(tmp_path).evaluate(plan, context, make_session("agent-happy"))
 
     assert decision.terminal_stage == "capability_enforcement"
     assert decision.accepted
+    assert decision.trust_level == "verified"
+    assert decision.autonomy_mode == "autonomous_execution"
     assert set(decision.executed_actions) == {"block_source", "increase_logging"}
 
 

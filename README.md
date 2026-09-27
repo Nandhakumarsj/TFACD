@@ -4,6 +4,15 @@
 
 This repository starts with the **training plane** and leaves stable interfaces for the runtime plane.
 
+## Architecture posture
+
+This project intentionally distinguishes between two phases:
+
+- **Phase I: correctness-first core** — leakage-safe data prep, deterministic trust boundary checks, explicit operator review, signed release gates, and reproducible deployment paths. This is the default, audited, and safety-oriented baseline.
+- **Phase II: deferred experiments** — adaptive agentic trust learning, broader autonomy loops, and speculative runtime optimization. These are treated as explicit research extensions rather than as ground truth or a replacement for verified review.
+
+The key design constraint is simple: the runtime plane may consume evidence, but it does not invent a false source of trust ground truth. A model is only as trustworthy as the evidence and reviews that have actually been verified.
+
 ---
 
 ## 🐳 Docker Quick-Start

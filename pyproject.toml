@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tfacd"
 version = "0.1.0"
-description = "Phase-I starter for trustworthy federated IIoT intrusion detection"
+description = "Phase-I correctness-first baseline for trustworthy federated IIoT intrusion detection; Phase II adaptive features remain deferred"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
