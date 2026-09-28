@@ -13,6 +13,19 @@ from tfacd.trust_boundary.memory_integrity import sanitize_event_payload
 from tfacd.trust_boundary.semantic_risk import SemanticRiskEngine
 
 
+def _execution_status(eligible: list[str], executed: list[str], executor_mode: str) -> str:
+    """REVIEW FIX (Section 18): derive execution_status from what was eligible
+    to run vs what the executor actually reported success for. See
+    TrustDecision.execution_status docstring for the full contract."""
+    if not eligible:
+        return "not_attempted"
+    if not executed:
+        return "failed"
+    if len(executed) < len(eligible):
+        return "partially_executed"
+    return "executed" if executor_mode == "production" else "simulated"
+
+
 class AdaptiveSemanticTrustBoundary:
     """Orchestrates the full pipeline: Stage 1/2 (short-circuit on rejection) ->
     Stage 3 trust scoring -> capability enforcement -> memory write -> output
@@ -61,19 +74,22 @@ class AdaptiveSemanticTrustBoundary:
         trust_level = self.trust_regulator.trust_level(scores.trust_value)
         autonomy_mode = self.trust_regulator.autonomy_mode(trust_level)
 
+        eligible = capability_enforcement.eligible_actions(plan, autonomy_mode, self.policy, context)
         executed_actions = capability_enforcement.enforce(plan, autonomy_mode, self.policy, self.executor, context)
         accepted = autonomy_mode != "read_only"
+        execution_status = _execution_status(eligible, executed_actions, getattr(self.executor, "mode", "simulate"))
 
         return self._finalize(
             plan, session, stage_results, terminal_stage="capability_enforcement", accepted=accepted,
             trust_level=trust_level, autonomy_mode=autonomy_mode, scores=scores, executed_actions=executed_actions,
-            executor_mode=getattr(self.executor, "mode", "simulate"),
+            executor_mode=getattr(self.executor, "mode", "simulate"), execution_status=execution_status,
         )
 
     def _finalize(
         self, plan: CyberActionPlan, session: SessionContext, stage_results: list[StageResult], *, terminal_stage: str, accepted: bool,
         trust_level: str | None = None, autonomy_mode: str | None = None, scores: TrustScores | None = None,
         executed_actions: list[str] | None = None, executor_mode: str | None = None,
+        execution_status: str = "not_attempted",
     ) -> TrustDecision:
         decision = TrustDecision(
             incident_id=plan.incident_id,
@@ -87,6 +103,7 @@ class AdaptiveSemanticTrustBoundary:
             rationale=plan.rationale,
             engine=plan.engine,
             executor_mode=executor_mode,
+            execution_status=execution_status,
         )
         decision = output_protection.sanitize_decision(decision)
 

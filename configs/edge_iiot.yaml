@@ -21,8 +21,8 @@ data:
   test_size: 0.15
   validation_size: 0.15
   max_rows: null
-  sequence_length: 16
-  sequence_stride: 4
+  sequence_length: 1
+  sequence_stride: 1
   preserve_input_order: false
   temporal:
     # Flow/session windowing is used automatically when sequence_length > 1.
@@ -79,6 +79,14 @@ integrity:
   # With num_clients=5, trim_ratio must be >= 0.2 to trim even one client
   # (floor(5 * ratio) == 0 below that, silently disabling trimmed_mean).
   trim_ratio: 0.2
+  # REVIEW FIX (P0/P1 - security quorum bypass): server_app.py's
+  # min_train_nodes/min_available_nodes is 2, which is below the point where
+  # the detector's own clustering means anything (<3 clients) and below the
+  # point where trim_ratio actually trims anything (floor(2 * 0.2) == 0). If a
+  # federation shrinks below min_security_quorum, IntegrityAwareStrategy now
+  # refuses to aggregate that round at all, instead of silently accepting
+  # every survivor and degenerating the robust aggregator into a plain mean.
+  min_security_quorum: 3
   # Gate 4 found the detector alone only catches malicious clients ~33% of the
   # time (TPR); coordinate_median/trimmed_mean stayed robust under every attack
   # tested. Aggregating survivors with a robust method, not plain weighted_mean,
@@ -94,10 +102,10 @@ runtime:
 
 agentic:
   decision_engine:
-    # "template" (default) | "llm" - the LLM engine is opt-in and gated: see
+    # "template" | "llm" - the primary engine is Ollama and remains gated: see
     # agentic/factory.py::build_decision_engine, which refuses to construct it
     # without a passing artifacts/agentic/llm_benchmark_report.json.
-    engine: "template"
+    engine: "llm"
   llm:
     provider: "ollama"
     model: "qwen3:8b"

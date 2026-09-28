@@ -32,3 +32,26 @@ def test_sanitize_decision_redacts_rationale():
     sanitized = sanitize_decision(decision)
     assert "hunter2" not in sanitized.rationale
     assert sanitized.incident_id == decision.incident_id
+
+
+def test_sanitize_decision_redacts_stage_result_reasons():
+    """REVIEW FIX (Section 26 - leak path): preprocessing.py's obfuscation
+    detector can echo a decoded preview straight into a StageResult reason
+    (e.g. a base64 payload's decoded content). That reason must be redacted
+    the same way rationale is, or sensitive decoded content reaches the audit
+    log unfiltered."""
+    from tfacd.runtime.contracts import StageResult
+
+    decision = TrustDecision(
+        incident_id="i", accepted=False, terminal_stage="preprocessing",
+        rationale="ok",
+        stage_results=[
+            StageResult(
+                stage="preprocessing",
+                accepted=False,
+                reasons=["parameter 'note' looks base64-encoded (decodes to: 'password=hunter2')"],
+            )
+        ],
+    )
+    sanitized = sanitize_decision(decision)
+    assert "hunter2" not in sanitized.stage_results[0].reasons[0]

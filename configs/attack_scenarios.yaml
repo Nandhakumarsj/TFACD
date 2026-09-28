@@ -23,13 +23,29 @@
 # modbus_normal_traffic_generalization_check scenario below, which exists
 # specifically to surface that finding rather than route around it.
 
+# REVIEW FIX (Section 37 - cross-module contradiction): ddos_segment_isolation
+# below used to set expected_capability: isolate_segment, but
+# configs/threat_context.yaml's DDoS_TCP entry (what this scenario's injected
+# traffic actually classifies as) only allows
+# [rate_limit, block_source, start_capture, notify_soc] - isolate_segment is
+# not in that list for ANY DDoS_* category. So the decision engine could
+# structurally never propose isolate_segment for this scenario, making its
+# own "expected" outcome impossible under the active policy - exactly the
+# kind of scenario/policy drift this file's own "informational only" comment
+# above was trying to guard against, just not enforced. Fixed by aligning
+# expected_capability to rate_limit (already allowed for every DDoS_* category,
+# and the closer semantic match for throttling a flood than block_source,
+# which targets one source - vs. widening DDoS_TCP's allowed_playbooks to add
+# isolate_segment, which would be a real policy change affecting every DDoS
+# category, not just this demo scenario, and wasn't asked for).
 ddos_segment_isolation:
   description: >
     Baseline Temperature_and_Humidity sensor traffic, then a DDoS TCP SYN flood
-    injected mid-stream - "network disconnect" scenario. isolate_segment is the
-    closest real capability to disconnecting/isolating a network segment under
-    sustained flood traffic.
-  expected_capability: isolate_segment
+    injected mid-stream - "network disconnect" scenario. rate_limit is the
+    closest real, policy-allowed capability to throttling sustained flood
+    traffic (isolate_segment is not in DDoS_TCP's allowed_playbooks - see the
+    fix note above this scenario).
+  expected_capability: rate_limit
   steps:
     - label: baseline_temp_humidity
       csv_path: "datasets/Edge_IIoTset/Normal traffic/Temperature_and_Humidity/Temperature_and_Humidity.csv"

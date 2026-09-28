@@ -320,18 +320,31 @@ def _preprocess_temporal(config: dict[str, Any], frame: pd.DataFrame) -> Prepare
     val_size = float(cfg.get("validation_size", 0.15))
     train_ids, val_ids, test_ids = _split_temporal_ids_by_session(seq_meta, test_size, val_size, seed=seed)
 
+    # REVIEW FIX (P0 - leakage-safe split fallback): this used to silently fall
+    # back to a random sequence-level train_test_split whenever the session-safe
+    # split produced an empty split. That fallback does NOT keep a session in a
+    # single split, so overlapping/adjacent windows from the same session could
+    # land on both sides of train/test - reintroducing exactly the leakage the
+    # session-safe splitter exists to prevent. A leakage-safe split silently
+    # becoming a leakage-prone one is a correctness bug, not something to
+    # recover from quietly. Fail loudly with a diagnostic instead, so the person
+    # running preprocessing has to make a deliberate choice (fewer sessions,
+    # different session/group_columns, or accept the tradeoff explicitly) rather
+    # than unknowingly training/evaluating on a leaky split.
     if len(train_ids) == 0 or len(val_ids) == 0 or len(test_ids) == 0:
-        seq_ids = np.arange(len(seq_meta))
-        trainval_ids, test_ids, y_trainval, y_test = train_test_split(
-            seq_ids, y, test_size=test_size, random_state=seed, stratify=y
-        )
-        relative_val = val_size / (1.0 - test_size)
-        train_ids, val_ids, _, _ = train_test_split(
-            trainval_ids,
-            y_trainval,
-            test_size=relative_val,
-            random_state=seed,
-            stratify=y_trainval,
+        total_sessions = int(seq_meta["session_id"].nunique())
+        raise ValueError(
+            "Session-safe temporal split failed: could not assign every split "
+            f"(train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)}) "
+            f"at least one session out of {total_sessions} total session(s) for "
+            f"test_size={test_size}, validation_size={val_size}. Refusing to fall "
+            "back to a random sequence-level split, since that would allow "
+            "overlapping windows from the same session to leak across train/test. "
+            "Fix by: increasing the dataset/session count, lowering "
+            "test_size/validation_size, adjusting temporal.group_columns or "
+            "temporal.inactivity_seconds so sessions merge/split differently, or "
+            "explicitly accepting a non-session-safe split by changing this code "
+            "path with full awareness of the leakage tradeoff."
         )
 
     features, _ = _feature_columns(frame, cfg, label_col, attack_type, target_col)

@@ -1,6 +1,6 @@
 from tfacd.common.config import load_config
 from tfacd.runtime.contracts import CyberAction, CyberActionPlan, IDSAlert, ThreatContext
-from tfacd.trust_boundary.capability_enforcement import SimulatedExecutor, enforce
+from tfacd.trust_boundary.capability_enforcement import SimulatedExecutor, eligible_actions, enforce
 
 POLICY = load_config("configs/trust_policy.yaml")
 
@@ -69,3 +69,20 @@ def test_whitelisted_but_not_context_allowed_capability_skipped():
 def test_simulated_executor_returns_success():
     result = SimulatedExecutor().execute(CyberAction(capability="observe"))
     assert result is True
+
+
+def test_eligible_actions_matches_enforce_filtering_without_invoking_executor():
+    """REVIEW FIX (Section 18): eligible_actions() must apply the exact same
+    whitelist/context/autonomy filtering enforce() does, so boundary.py can
+    compare "what should run" against "what actually succeeded" to derive
+    execution_status - without eligible_actions() itself ever touching the
+    executor."""
+    executor = RecordingExecutor()
+    for mode in ("read_only", "recommendation", "restricted_action", "autonomous_execution"):
+        assert eligible_actions(make_plan(), mode, POLICY, make_context()) == enforce(make_plan(), mode, POLICY, executor, make_context())
+    assert executor.calls  # sanity: enforce() above did actually call the executor, unlike eligible_actions()
+
+
+def test_eligible_actions_respects_context_allowed_playbooks():
+    context = make_context(allowed_playbooks=("observe",))
+    assert eligible_actions(make_plan(), "autonomous_execution", POLICY, context) == ["observe"]

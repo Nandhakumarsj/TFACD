@@ -73,6 +73,39 @@ def test_detector_degenerate_cohort_reports_zero_ood_without_crashing():
     assert result.metrics.degenerate
 
 
+def test_no_separation_evidence_accepts_everyone_on_identical_updates():
+    """REVIEW FIX (RED - forced two-cluster problem): AgglomerativeClustering(
+    n_clusters=2) used to be forced even on a cohort with no real malicious
+    client, manufacturing a "majority benign / minority suspicious" split out
+    of noise. With fully identical (degenerate) updates there is definitely no
+    real separation, so every client must be accepted for this round rather
+    than an arbitrary minority being penalized."""
+    vectors = np.ones((5, 10), dtype=np.float64)
+    detector = PCAClusterEMAFilter(ema_alpha=1.0, reject_below_trust=0.5)
+    result = detector.detect([str(i) for i in range(5)], vectors)
+
+    assert result.metrics.degenerate
+    assert result.metrics.no_separation_evidence
+    assert np.all(result.round_scores == 1.0)
+    assert np.all(result.benign_mask)
+
+
+def test_weak_silhouette_accepts_everyone_even_with_real_outlier_absent():
+    """A cohort where clustering only finds a low-quality split (silhouette
+    below min_silhouette_for_rejection) must not have that split treated as
+    evidence a client is malicious."""
+    rng = np.random.default_rng(7)
+    vectors = rng.normal(0, 0.05, size=(6, 15))  # homogeneous noise, no planted outlier
+    detector = PCAClusterEMAFilter(ema_alpha=1.0, reject_below_trust=0.5, min_silhouette_for_rejection=0.99)
+    result = detector.detect([str(i) for i in range(6)], vectors)
+
+    # min_silhouette_for_rejection=0.99 forces the "no real separation" path
+    # regardless of the actual silhouette value, isolating the behavior under test.
+    assert result.metrics.no_separation_evidence
+    assert np.all(result.round_scores == 1.0)
+    assert np.all(result.benign_mask)
+
+
 def test_detector_too_few_clients_still_advances_trust_history():
     detector = PCAClusterEMAFilter(ema_alpha=0.5)
     vectors = np.array([[1.0, 2.0], [3.0, 4.0]])

@@ -31,6 +31,13 @@ class DetectionMetrics:
     benign_cluster_size: int
     distance_fallback_used: bool
     degenerate: bool
+    # REVIEW FIX (RED - forced two-cluster problem): True when this round's
+    # 2-cluster split was NOT backed by evidence of a real separation (either
+    # the cohort was ~degenerate, or silhouette quality was below
+    # `min_silhouette_for_rejection`), so every client was treated as benign
+    # for this round's clustering signal instead of the smaller cluster being
+    # penalized on no real evidence. See PCAClusterEMAFilter docstring.
+    no_separation_evidence: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +49,7 @@ class DetectionMetrics:
             "benign_cluster_size": self.benign_cluster_size,
             "distance_fallback_used": self.distance_fallback_used,
             "degenerate": self.degenerate,
+            "no_separation_evidence": self.no_separation_evidence,
         }
 
 
@@ -85,6 +93,21 @@ class PCAClusterEMAFilter:
     min_benign_fraction: float = 0.5
     ema_alpha: float = 0.3
     reject_below_trust: float = 0.35
+    # REVIEW FIX (RED - forced two-cluster problem): AgglomerativeClustering(
+    # n_clusters=2) used to be forced on every round with >=3 clients, even
+    # when the client population had NO real separation (e.g. 5 honest
+    # clients with near-identical updates still got split into "majority
+    # benign" / "minority suspicious", and an honest client that repeatedly
+    # happened to land in the minority could eventually be rejected by EMA
+    # trust alone). silhouette_score is the standard cluster-quality metric
+    # (Kaufman & Rousseeuw): <~0.25 is conventionally read as "no substantial
+    # structure found". 0.15 is used here as a conservative floor - below it,
+    # OR when silhouette is undefined (e.g. DBSCAN found <2 real clusters), OR
+    # when the cohort is ~degenerate (near-identical updates), this round's
+    # clustering split is treated as having no separation evidence and every
+    # client is accepted for THIS round's signal, rather than one cluster
+    # being penalized on the strength of an arbitrary, non-evidenced split.
+    min_silhouette_for_rejection: float = 0.15
     history: dict[str, float] = field(default_factory=dict)
 
     def _update_trust(self, client_ids: list[str], round_scores: np.ndarray) -> np.ndarray:
@@ -161,14 +184,6 @@ class PCAClusterEMAFilter:
         # scores out of floating-point noise.
         ood_scores = np.zeros(n_clients, dtype=np.float64) if degenerate else distances / median_distance
 
-        # If clustering labels too few clients benign, retain the closest clients to the robust center.
-        minimum = max(1, int(np.ceil(self.min_benign_fraction * n_clients)))
-        distance_fallback_used = int(round_scores.sum()) < minimum
-        if distance_fallback_used:
-            keep = np.argsort(distances)[:minimum]
-            round_scores[:] = 0.0
-            round_scores[keep] = 1.0
-
         # silhouette_score is only defined for 2..n-1 distinct labels; DBSCAN can
         # legitimately produce a single label (all noise, or all one cluster).
         unique_labels = np.unique(labels)
@@ -179,12 +194,33 @@ class PCAClusterEMAFilter:
             except ValueError:
                 silhouette = None
 
+        # REVIEW FIX (RED - forced two-cluster problem): only let the cluster
+        # split penalize anyone when there is actual evidence it reflects a
+        # real division in the cohort. Otherwise every client is accepted for
+        # this round's clustering signal - "no evidence of separation -> accept
+        # all" instead of "n>=3 -> force two clusters -> someone must be
+        # suspicious". The distance-based minimum-benign-fraction fallback
+        # below only makes sense once we know there IS a genuine split to
+        # protect against being too aggressive.
+        no_separation_evidence = degenerate or silhouette is None or silhouette < self.min_silhouette_for_rejection
+        distance_fallback_used = False
+        if no_separation_evidence:
+            round_scores = np.ones(n_clients, dtype=np.float64)
+        else:
+            # If clustering labels too few clients benign, retain the closest clients to the robust center.
+            minimum = max(1, int(np.ceil(self.min_benign_fraction * n_clients)))
+            distance_fallback_used = int(round_scores.sum()) < minimum
+            if distance_fallback_used:
+                keep = np.argsort(distances)[:minimum]
+                round_scores[:] = 0.0
+                round_scores[keep] = 1.0
+
         trust = self._update_trust(client_ids, round_scores)
         benign_mask = trust >= self.reject_below_trust
         metrics = DetectionMetrics(
             cluster_method=self.cluster_method, n_clients=n_clients, n_components=components,
             explained_variance_ratio=explained_variance_ratio, silhouette=silhouette,
             benign_cluster_size=int(round_scores.sum()), distance_fallback_used=distance_fallback_used,
-            degenerate=degenerate,
+            degenerate=degenerate, no_separation_evidence=no_separation_evidence,
         )
         return DetectionResult(benign_mask, round_scores, trust, projected, ood_scores, metrics)

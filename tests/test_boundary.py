@@ -53,6 +53,9 @@ def test_happy_path_executes_actions(tmp_path):
     assert decision.trust_level == "verified"
     assert decision.autonomy_mode == "autonomous_execution"
     assert set(decision.executed_actions) == {"block_source", "increase_logging"}
+    # REVIEW FIX (Section 18): every eligible action executed successfully via
+    # the (default) simulate executor.
+    assert decision.execution_status == "simulated"
 
 
 def test_stale_session_short_circuits_before_trust_scoring(tmp_path):
@@ -99,6 +102,55 @@ def test_low_trust_blocks_despite_clean_stage_1_and_2(tmp_path):
     assert decision.autonomy_mode == "read_only"
     assert not decision.accepted
     assert decision.executed_actions == []
+    # REVIEW FIX (Section 18): `accepted=False` here means "not trust-approved
+    # for autonomy" - nothing was ever eligible to run (read_only), which is a
+    # distinct fact from a failed execution attempt.
+    assert decision.execution_status == "not_attempted"
+
+
+def test_execution_status_failed_when_executor_rejects_every_action(tmp_path):
+    """REVIEW FIX (Section 18): a plan can be trust-APPROVED (accepted=True)
+    while every action still fails at the executor - `accepted` must not be
+    read as "it worked". execution_status is what actually happened."""
+
+    class AlwaysFailsExecutor:
+        mode = "simulate"
+
+        def execute(self, action):
+            return False
+
+    alert = IDSAlert(attack_type="Port_Scanning", confidence=0.7, source_id="10.0.0.5", target_asset="plc-01")
+    context = ThreatContext(alert=alert, severity="medium", priority="P2", mitre_techniques=[], allowed_playbooks=["block_source"])
+    plan = CyberActionPlan(
+        incident_id="i9", confidence=0.7,
+        rationale="Medium severity Port_Scanning detected; recommending block_source for investigation and containment.",
+        actions=[CyberAction(capability="block_source", target="10.0.0.5")],
+    )
+    decision = build_boundary(tmp_path, executor=AlwaysFailsExecutor()).evaluate(plan, context, make_session("agent-exec-fail"))
+
+    assert decision.accepted  # trust-approved
+    assert decision.executed_actions == []  # but nothing actually ran successfully
+    assert decision.execution_status == "failed"
+
+
+def test_execution_status_partially_executed_when_some_actions_fail(tmp_path):
+    class FailsSpecificCapabilityExecutor:
+        mode = "simulate"
+
+        def execute(self, action):
+            return action.capability != "increase_logging"
+
+    alert = IDSAlert(attack_type="Port_Scanning", confidence=0.7, source_id="10.0.0.5", target_asset="plc-01")
+    context = ThreatContext(alert=alert, severity="medium", priority="P2", mitre_techniques=[], allowed_playbooks=["block_source", "increase_logging"])
+    plan = CyberActionPlan(
+        incident_id="i10", confidence=0.7,
+        rationale="Medium severity Port_Scanning detected; recommending block_source, increase_logging for investigation and containment.",
+        actions=[CyberAction(capability="block_source", target="10.0.0.5"), CyberAction(capability="increase_logging", target="plc-01")],
+    )
+    decision = build_boundary(tmp_path, executor=FailsSpecificCapabilityExecutor()).evaluate(plan, context, make_session("agent-exec-partial"))
+
+    assert decision.executed_actions == ["block_source"]
+    assert decision.execution_status == "partially_executed"
 
 
 def test_executor_mode_defaults_to_simulate_and_is_none_before_capability_enforcement_runs(tmp_path):
@@ -134,6 +186,9 @@ def test_executor_mode_reflects_a_custom_executors_mode_attribute(tmp_path):
     decision = build_boundary(tmp_path, executor=FakeProductionExecutor()).evaluate(plan, context, make_session("agent-mode-production"))
 
     assert decision.executor_mode == "production"
+    # REVIEW FIX (Section 18): full success via a "production" executor is
+    # "executed", distinct from "simulated" (same success, simulate executor).
+    assert decision.execution_status == "executed"
 
 
 def test_trust_decision_carries_plan_engine_provenance(tmp_path):

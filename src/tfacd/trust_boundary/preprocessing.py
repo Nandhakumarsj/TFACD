@@ -104,6 +104,21 @@ def run(plan: CyberActionPlan, session: SessionContext, history: EntityHistory, 
 
     normalized_actions = []
     for action in plan.actions:
+        # REVIEW FIX (Section 21 - target fields not processed like parameters):
+        # `target` is one of the most security-sensitive fields on an action
+        # (it's what block_source/rate_limit/isolate_segment act on) yet it
+        # received none of the length/canonicalization/obfuscation checks
+        # `parameters` values get. Apply the identical treatment here.
+        normalized_target = action.target
+        if isinstance(normalized_target, str):
+            if len(normalized_target) > config["max_parameter_string_length"]:
+                reasons.append(f"action target for '{action.capability}' exceeds max length")
+                normalized_target = normalized_target[: config["max_parameter_string_length"]]
+            normalized_target = canonicalize(normalized_target)
+            obfuscated_target = _detect_obfuscation(normalized_target)
+            if obfuscated_target:
+                reasons.append(f"action target for '{action.capability}' {obfuscated_target}")
+
         normalized_params: dict[str, Any] = {}
         for key, value in action.parameters.items():
             if isinstance(value, str):
@@ -120,12 +135,26 @@ def run(plan: CyberActionPlan, session: SessionContext, history: EntityHistory, 
                 elif abs(value) > config["max_numeric_parameter"]:
                     reasons.append(f"parameter '{key}' exceeds max magnitude")
             normalized_params[key] = value
-        normalized_actions.append(action.model_copy(update={"parameters": normalized_params}))
+        normalized_actions.append(action.model_copy(update={"target": normalized_target, "parameters": normalized_params}))
 
-    recent_decisions = history.count_since(session.agent_id, within=timedelta(hours=1), kind="trust_decision")
+    # REVIEW FIX (Section 21 - quota semantics wrong): entity_action_quota_per_hour
+    # is named and documented as an ACTION quota, but was counting
+    # trust_decision EVENTS (one per evaluate() call, i.e. one per PLAN,
+    # regardless of how many actions that plan contained) - a 1-action plan and
+    # a 5-action plan both counted as "1" against the quota. boundary.py's
+    # payload for each past trust_decision records `capabilities`, one entry
+    # per action in that plan, so summing its length gives the true historical
+    # action count; the current plan's own action count is added before
+    # comparing against the quota, since those actions haven't been logged yet.
+    recent_decisions = history.recent(session.agent_id, kind="trust_decision", within=timedelta(hours=1))
+    recent_action_count = sum(len(e["payload"].get("capabilities", [])) for e in recent_decisions)
+    prospective_action_count = recent_action_count + len(plan.actions)
     quota = config["entity_action_quota_per_hour"]
-    if recent_decisions >= quota:
-        reasons.append(f"hourly action quota exceeded ({recent_decisions} >= {quota})")
+    if prospective_action_count > quota:
+        reasons.append(
+            f"hourly action quota exceeded ({prospective_action_count} > {quota}: "
+            f"{recent_action_count} in the last hour + {len(plan.actions)} in this plan)"
+        )
 
     # rationale gets the same obfuscation check as every string parameter above -
     # it's free-text authored by the decision engine (an LLM, for the "llm"

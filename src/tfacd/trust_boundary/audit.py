@@ -10,6 +10,11 @@ from tfacd.runtime.contracts import AuditEntry, TrustDecision
 _GENESIS_HASH = "0" * 64
 
 
+class AuditChainTamperedError(RuntimeError):
+    """Raised by AuditLogger when an existing on-disk audit log's hash chain
+    does not verify - see AuditLogger.__init__ and .append() docstrings."""
+
+
 def _canonical_bytes(data: dict) -> bytes:
     return json.dumps(data, sort_keys=True, default=str).encode("utf-8")
 
@@ -32,14 +37,42 @@ class AuditLogger:
         self.path = Path(path)
         self.sequence = 0
         self.last_hash = _GENESIS_HASH
-        if self.path.exists():
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    entry = json.loads(line)
-                    self.sequence = entry["sequence"]
-                    self.last_hash = entry["entry_hash"]
+        # REVIEW FIX (P1 - startup trusts the log blindly): this used to read
+        # only the LAST line's stored entry_hash and continue appending from
+        # it, without ever checking that the stored chain is internally
+        # consistent. A log tampered with before this process even started
+        # (edited on disk, or an attacker-substituted older copy) would be
+        # silently accepted as ground truth, and this process would keep
+        # extending a chain that already lies. verify_chain() now runs once at
+        # startup; if it fails, append() refuses to write rather than quietly
+        # continuing a broken chain (see AuditChainTamperedError).
+        self._tampered = False
+        self._tamper_detail: str | None = None
+        if self.path.exists() and self.path.read_text(encoding="utf-8").strip():
+            ok, first_broken_sequence = verify_chain(self.path)
+            if not ok:
+                self._tampered = True
+                self._tamper_detail = (
+                    f"existing audit log at {self.path} failed hash-chain verification "
+                    f"starting at sequence {first_broken_sequence} - it may have been tampered with"
+                )
+            else:
+                for line in self.path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        entry = json.loads(line)
+                        self.sequence = entry["sequence"]
+                        self.last_hash = entry["entry_hash"]
 
     def append(self, decision: TrustDecision, agent_id: str | None = None) -> AuditEntry:
+        if self._tampered:
+            # Refuse to append to a chain that failed startup verification -
+            # extending it would make the tampering harder to notice, not
+            # easier, and would mix trustworthy new entries with an already
+            # broken history.
+            raise AuditChainTamperedError(
+                f"{self._tamper_detail}. Refusing to append further entries until this is "
+                "investigated (e.g. restore from a known-good backup or start a new log file)."
+            )
         self.sequence += 1
         timestamp = datetime.now(timezone.utc)
         provenance = {

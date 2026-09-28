@@ -32,5 +32,22 @@ def sanitize_decision(decision: TrustDecision) -> TrustDecision:
     """Sanitizes the outgoing TrustDecision unconditionally as the last step
     before it's returned/logged - even a blocked decision's echoed rationale
     could contain something worth redacting.
+
+    REVIEW FIX (Section 26 - leak path): this used to sanitize ONLY
+    `rationale`. preprocessing.py's obfuscation detector can embed a decoded
+    preview of a flagged value directly into a StageResult's `reasons` (e.g.
+    "looks base64-encoded (decodes to: ...)") - if that decoded content
+    happens to contain something matching one of the patterns above (an API
+    key, a password, an email), it would reach the audit log completely
+    unredacted through `reasons` while `rationale` was the only field actually
+    protected. Every free-text field that can carry attacker- or
+    detector-echoed content must get the same treatment before this decision
+    is returned or audited.
     """
-    return decision.model_copy(update={"rationale": redact(decision.rationale)})
+    sanitized_stage_results = [
+        stage_result.model_copy(update={"reasons": [redact(reason) for reason in stage_result.reasons]})
+        for stage_result in decision.stage_results
+    ]
+    return decision.model_copy(
+        update={"rationale": redact(decision.rationale), "stage_results": sanitized_stage_results}
+    )

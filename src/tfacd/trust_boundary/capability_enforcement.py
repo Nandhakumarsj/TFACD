@@ -25,6 +25,35 @@ class SimulatedExecutor:
         return True
 
 
+def eligible_actions(plan: CyberActionPlan, autonomy_mode: str, policy: dict[str, Any], context: ThreatContext) -> list[str]:
+    """REVIEW FIX (Section 18): the same whitelist/context/autonomy filtering
+    `enforce()` applies, WITHOUT invoking the executor - i.e. "what should be
+    attempted", independent of whether it actually succeeded. Callers use this
+    alongside `enforce()`'s return value (what actually succeeded) to derive
+    execution_status: not_attempted (nothing eligible) / fully executed / failed
+    / partially_executed. Kept as a separate function rather than changing
+    `enforce()`'s return type, so `enforce()` remains a drop-in list[str] for
+    existing callers/tests.
+    """
+    if autonomy_mode in ("read_only", "recommendation"):
+        return []
+    whitelist = policy["capability_whitelist"]
+    low_risk = set(whitelist["low_risk"])
+    known = low_risk | set(whitelist["high_risk"])
+    allowed_for_context = set(context.allowed_playbooks)
+
+    eligible: list[str] = []
+    for action in plan.actions:
+        if action.capability not in known:
+            continue
+        if action.capability not in allowed_for_context:
+            continue
+        if autonomy_mode == "restricted_action" and action.capability not in low_risk:
+            continue
+        eligible.append(action.capability)
+    return eligible
+
+
 def enforce(plan: CyberActionPlan, autonomy_mode: str, policy: dict[str, Any], executor: CapabilityExecutor, context: ThreatContext) -> list[str]:
     """Function interception: gates execution by autonomy mode and re-checks the
     whitelist immediately before invoking the executor, as defense-in-depth
@@ -61,16 +90,35 @@ def enforce(plan: CyberActionPlan, autonomy_mode: str, policy: dict[str, Any], e
 
 
 # --- Real & Pluggable Executor Factory ---
+#
+# REVIEW FIX (Section 39 - duplicate executor architecture): this function and
+# executor_factory.build_executor() are two independent ways to construct a
+# CapabilityExecutor from config, and only executor_factory.build_executor()
+# is on the actual runtime path every script uses
+# (run_streaming_demo.py, run_attack_scenario.py, and - after the Section 40
+# fix - run_submission_workflow.py). build_executor_from_config() is legacy:
+# it is not called anywhere in src/ or scripts/ anymore, only from
+# tests/test_executors.py, which is why it's kept rather than deleted - it
+# supports two drivers (command, webhook) that executor_factory.build_executor()
+# does not, so it isn't a strict subset/duplicate to just delete outright, and
+# doing so was explicitly out of scope ("cleanup, not a rewrite"). Do not wire
+# any new runtime code to this function - use
+# tfacd.trust_boundary.executor_factory.build_executor(config) instead.
+
 
 def build_executor_from_config(config: dict) -> "CapabilityExecutor":
-    """Factory: reads executor config and returns the appropriate executor.
+    """LEGACY - see the module-level REVIEW FIX note directly above. New code
+    should use tfacd.trust_boundary.executor_factory.build_executor() instead,
+    which is the one actual runtime scripts construct their executor from.
+
+    Factory: reads executor config and returns the appropriate executor.
 
     Accepts two config shapes:
     1. Flat:   ``{"mode": "simulate" | "production" | "command" | "webhook", ...}``
     2. Nested: ``{"capability_execution": {"driver": "command" | "webhook" | ..., "dry_run": True, ...}}``
 
-    The nested shape is what the unit-test suite uses; the flat shape is what
-    ``configs/edge_iiot.yaml``'s ``trust_boundary.executor`` block uses.
+    Both shapes above are exercised by tests/test_executors.py directly against
+    this function; neither is what any runtime script actually passes anymore.
     """
     if not config:
         return SimulatedExecutor()

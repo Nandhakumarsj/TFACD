@@ -67,6 +67,13 @@ class TrustScores(BaseModel):
 
 class TrustDecision(BaseModel):
     incident_id: str
+    # REVIEW FIX (Section 18 - overloaded `accepted` semantics): `accepted`
+    # means ONLY "the trust boundary approved this plan for some level of
+    # autonomy" (i.e. autonomy_mode != "read_only"). It says nothing about
+    # whether any action actually ran, or ran successfully - that is what
+    # `execution_status` below is for. Analytics/consumers that need to know
+    # whether an action was actually carried out must read `execution_status`,
+    # not infer it from `accepted`.
     accepted: bool
     terminal_stage: str
     trust_level: Literal["low", "medium", "high", "verified"] | None = None
@@ -83,6 +90,24 @@ class TrustDecision(BaseModel):
     # trust_level/autonomy_mode/scores above. Provenance, not itself a security
     # control - same posture as `engine`.
     executor_mode: Literal["simulate", "production"] | None = None
+    # REVIEW FIX (Section 18): separates "was this plan trust-approved"
+    # (`accepted`) from "what actually happened when we tried to carry it
+    # out". Values:
+    #   not_attempted        - capability_enforcement never ran (an earlier
+    #                          stage rejected the plan) or autonomy_mode was
+    #                          "read_only"/"recommendation" so nothing was
+    #                          eligible to run.
+    #   simulated            - every eligible action ran, via SimulatedExecutor
+    #                          (no real-world effect).
+    #   executed             - every eligible action ran, via ProductionExecutor
+    #                          (real-world effect).
+    #   failed               - at least one action was eligible to run but the
+    #                          executor reported failure for ALL of them.
+    #   partially_executed   - the executor reported failure for SOME but not
+    #                          all eligible actions.
+    execution_status: Literal[
+        "not_attempted", "simulated", "executed", "failed", "partially_executed"
+    ] = "not_attempted"
 
 
 class AuditEntry(BaseModel):

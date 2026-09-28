@@ -5,6 +5,27 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# REVIEW FIX (Section 14 - certification signs the wrong artifact): this used
+# to sign/verify the MODEL FILE's raw bytes (sign_file/verify_file on
+# model_path). The certified/uncertified STATUS lives only in the manifest
+# JSON alongside it, which was never covered by that signature - an attacker
+# able to edit the manifest (but not re-sign anything) could flip
+# metadata.status from "trained-uncertified" to "certified" and the model
+# signature would still verify, because it never said anything about status
+# in the first place. The fix: sign the CANONICAL MANIFEST bytes (which
+# already contain the model's sha256 + metadata + status together), and
+# verify that same manifest signature plus a fresh sha256 recompute of the
+# model file. That ties status, metadata, and model integrity into one
+# signed artifact instead of two independently-trusted ones.
+#
+# Outstanding limitation this does NOT fix (flagged, not silently left
+# unaddressed): the public key is still read from a local artifacts/keys
+# path rather than a deployment-installed/pinned trust root. That is a
+# deployment/infrastructure decision (where the trusted public key actually
+# lives, how it's provisioned to verifying hosts) that depends on how this
+# project is deployed - not something to invent a mechanism for without
+# knowing that. Left as an explicit follow-up for the person building this.
+
 
 def sha256_file(path: str | Path) -> str:
     digest = hashlib.sha256()
@@ -12,6 +33,16 @@ def sha256_file(path: str | Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_manifest_bytes(payload: dict) -> bytes:
+    """Deterministic byte encoding of a manifest payload (the exact dict shape
+    write_manifest() produces: {"model", "sha256", "metadata"}), used as the
+    thing that actually gets signed/verified for certification. Sorted keys +
+    fixed separators so the same logical manifest always encodes identically
+    regardless of dict insertion order.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def write_manifest(model_path: str | Path, metadata: dict, output_path: str | Path | None = None) -> Path:
@@ -84,7 +115,7 @@ def verify_release(
 
     signature_ok: bool | None = None
     if require_signature or signature.exists():
-        from tfacd.integrity.signing import verify_file  # local import: avoids a hard cryptography dependency for callers that never touch signatures
+        from tfacd.integrity.signing import verify_bytes  # local import: avoids a hard cryptography dependency for callers that never touch signatures
 
         if not signature.exists():
             signature_ok = False
@@ -93,9 +124,16 @@ def verify_release(
             signature_ok = False
             reasons.append(f"signature present but public key missing at {public_key_path}")
         else:
-            signature_ok = verify_file(model, public_key_path, signature)
+            # REVIEW FIX (Section 14): verify against the CANONICAL MANIFEST
+            # bytes (model hash + metadata + status together), not the model
+            # file's raw bytes - see module docstring. sha256_ok above already
+            # independently confirms the manifest's claimed hash matches the
+            # actual model file, so together these two checks mean: the model
+            # matches what the manifest claims, AND the manifest (hash,
+            # metadata, status - all of it) matches what was actually signed.
+            signature_ok = verify_bytes(canonical_manifest_bytes(payload), public_key_path, signature.read_bytes())
             if not signature_ok:
-                reasons.append(f"signature verification failed against {signature}")
+                reasons.append(f"manifest signature verification failed against {signature}")
 
     # signature_ok is None only when no check was performed at all (possible
     # only when require_signature=False AND no .sig file exists - see the

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from tfacd.data.data_inspector import inspect_all, inspect_temporal
 from tfacd.data.preprocess import heldout_indices, preprocess
@@ -143,6 +144,33 @@ def test_temporal_splits_are_session_safe(tmp_path):
     assert set(train_ids).isdisjoint(set(val_ids))
     assert set(train_ids).isdisjoint(set(test_ids))
     assert set(val_ids).isdisjoint(set(test_ids))
+
+
+def test_temporal_fallback_raises_instead_of_leaking(tmp_path):
+    """REVIEW FIX (P0): when there are too few sessions to give every split at
+    least one session, preprocess() must fail loudly rather than silently
+    falling back to a random sequence-level split (which can leak overlapping
+    windows from the same session across train/test)."""
+    csv_path = tmp_path / "single_session.csv"
+    rows = []
+    for i in range(6):
+        rows.append(
+            {
+                "frame.time": f"2024-01-01 00:00:00.{i:02d}",
+                "ip.src_host": "10.0.0.1",
+                "ip.dst_host": "10.0.0.2",
+                "tcp.srcport": 1000 + i,
+                "tcp.dstport": 80,
+                "ip.proto": 6,
+                "pkt_size": float(i),
+                "Attack_type": "Normal",
+            }
+        )
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    config = _write_config(tmp_path, csv_path, sequence_length=3)
+
+    with pytest.raises(ValueError, match="Session-safe temporal split failed"):
+        preprocess(config)
 
 
 def test_inspect_temporal_on_flow_csv(tmp_path):

@@ -56,12 +56,44 @@ the release notes unless they prefer to remain anonymous.
 TFACD enforces several layers of protection that contributors should be aware
 of and must not weaken:
 
+<!--
+REVIEW FIX (Section 42 - stale documentation): this table previously
+described an OLDER/aspirational architecture that doesn't match the current
+code:
+  - "SHA-256 hash pinned in configs/*.yaml" - no config file pins a model
+    hash. The actual mechanism is manifest + signature (see
+    src/tfacd/integrity/certification.py: write_manifest/verify_release),
+    checked at load time by streaming/pipeline.py.
+  - "Differential-privacy noise applied via dp_noise_scale" - this option
+    does not exist anywhere in the codebase. There is currently no
+    differential-privacy mechanism in the federated path. Removed rather
+    than left in place describing a feature that isn't there.
+  - "executors.py allow-list" - src/tfacd/trust_boundary/executors.py holds
+    real execution DRIVERS (command/webhook/pluggable), not the allow-list
+    itself. The actual capability whitelist enforcement lives in
+    src/tfacd/trust_boundary/capability_enforcement.py, checked against
+    configs/trust_policy.yaml's capability_whitelist and
+    configs/threat_context.yaml's per-incident allowed_playbooks.
+Keep this table in sync with the code it describes - a security doc that
+describes a different system than what's running is worse than no doc.
+-->
+
 | Layer | Mechanism |
 |---|---|
-| **Model integrity** | SHA-256 hash pinned in `configs/*.yaml`; verified before every inference run |
-| **Trust boundary** | All LLM-generated actions pass through `executors.py` allow-list before execution |
-| **Federated privacy** | Differential-privacy noise applied via `dp_noise_scale` config option |
+| **Model integrity** | Model release manifest (`sha256` + metadata + `status`) signed with Ed25519; verified via `integrity/certification.py::verify_release()` before every streaming inference run (`streaming/pipeline.py`) |
+| **Trust boundary** | Every LLM/template-generated action plan passes through the `AdaptiveSemanticTrustBoundary` pipeline (preprocessing → dynamic trust scoring → capability whitelist + per-incident `allowed_playbooks` check in `capability_enforcement.py`) before any executor runs it |
+| **Federated integrity** | `IntegrityAwareStrategy` (PCA + clustering-based outlier detection, EMA trust, robust trimmed-mean aggregation) rejects or down-weights suspicious client updates; a federation below `min_security_quorum` is refused rather than aggregated. There is currently no differential-privacy mechanism in the federated path |
 | **Credential handling** | No API keys or `.pem` files committed; `.dockerignore` and `.gitignore` exclude them |
 | **Dependency pinning** | `pyproject.toml` uses `>=`/`<` bounds; lock files used in Docker builds |
+| **Audit trail** | Hash-chained, append-only audit log (`trust_boundary/audit.py`); a log that fails chain verification at startup is refused further writes rather than silently extended |
+
+Known limitations (documented rather than hidden - see the code review this
+project has been through for the full list): the certification public key is
+currently read from a local `artifacts/keys` path rather than a
+deployment-pinned trust root; the FTIL outlier detector's separation-quality
+gate and quorum enforcement reduce but do not eliminate the risk of a
+sufficiently large coordinated set of malicious clients; and per-client
+update signing (as opposed to the final aggregated model's signature) is not
+yet implemented.
 
 Any change that weakens these controls requires explicit maintainer sign-off.

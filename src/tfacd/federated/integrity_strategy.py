@@ -62,6 +62,7 @@ class IntegrityAwareStrategy(FedProx):
         reject_below_trust: float = 0.35,
         aggregation_method: str = "trimmed_mean",
         trim_ratio: float = 0.2,
+        min_security_quorum: int = 3,
         trust_log_path: str | Path = "artifacts/models/ftil_trust_log.jsonl",
         **kwargs: Any,
     ) -> None:
@@ -70,6 +71,17 @@ class IntegrityAwareStrategy(FedProx):
         self.max_update_norm_ratio = max_update_norm_ratio
         self.aggregation_method = aggregation_method
         self.trim_ratio = trim_ratio
+        # REVIEW FIX (P0/P1 - security quorum bypass): server_app.py's
+        # min_train_nodes/min_available_nodes can be as low as 2, which is
+        # below PCAClusterEMAFilter's own "n_clients < 3 -> accept all"
+        # threshold AND below the point where trim_ratio actually trims
+        # anything (floor(2 * 0.2) == 0). That combination meant a shrunk
+        # federation silently bypassed both the detector and the robust
+        # aggregator at once. min_security_quorum is enforced independently,
+        # in this strategy (not the detector, whose job is classification, not
+        # quorum policy): below it, the round is refused rather than
+        # aggregated with "accept everyone" semantics.
+        self.min_security_quorum = min_security_quorum
         self.detector = PCAClusterEMAFilter(
             pca_components=pca_components,
             cluster_method=cluster_method,
@@ -107,10 +119,18 @@ class IntegrityAwareStrategy(FedProx):
         rejected_validation: list[str] = []
 
         for msg in valid_replies:  # 3. extract ArrayRecord + client ID
-            if "client-metadata" in msg.content:
-                client_id = str(msg.content["client-metadata"]["client-id"])
-            else:
-                client_id = str(msg.metadata.src_node_id)
+            # REVIEW FIX (P0/P1 - client identity spoofing): client_id used to
+            # come from the CLIENT-SUPPLIED "client-metadata" field whenever
+            # present, i.e. the server trusted whatever ID a client claimed to
+            # be. A malicious client could impersonate another client's ID,
+            # polluting that ID's EMA trust history and trust-log evidence, and
+            # potentially colliding with it in the per-client dictionaries
+            # below. msg.metadata.src_node_id is Flower's own authenticated
+            # sender identity and is now the ONLY source of client_id used for
+            # trust/aggregation bookkeeping. Client-supplied metadata may still
+            # be read for descriptive/debug purposes elsewhere, but must never
+            # define identity.
+            client_id = str(msg.metadata.src_node_id)
             candidate = _state_to_numpy(msg.content["arrays"])
             num_examples = int(msg.content["metrics"]["num-examples"])
 
@@ -123,6 +143,26 @@ class IntegrityAwareStrategy(FedProx):
             client_ids.append(client_id)
             client_states[client_id] = candidate
             client_weights[client_id] = num_examples
+
+        # REVIEW FIX (P0/P1 - security quorum bypass): enforced here, before the
+        # detector ever runs, so a federation that has shrunk below the
+        # meaningful-security threshold cannot fall through to "too few
+        # clients for clustering -> accept all" and cannot silently degenerate
+        # trimmed_mean into an unrobust plain mean. No global model update is
+        # produced for this round when quorum isn't met - the aggregator is
+        # deliberately unavailable rather than silently insecure.
+        if len(client_ids) < self.min_security_quorum:
+            self._log_trust_evidence(server_round, [], rejected_validation, [], {}, {}, None)
+            return None, MetricRecord(
+                {
+                    "ftil_accepted": 0,
+                    "ftil_rejected_validation": len(rejected_validation),
+                    "ftil_rejected_error": rejected_error,
+                    "ftil_insufficient_security_quorum": 1,
+                    "ftil_security_quorum": self.min_security_quorum,
+                    "ftil_available_clients": len(client_ids),
+                }
+            )
 
         accepted_ids = list(client_ids)
         rejected_detector: list[str] = []

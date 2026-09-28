@@ -4,8 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
-from tfacd.integrity.certification import verify_manifest, write_manifest
-from tfacd.integrity.signing import generate_keypair, sign_file, verify_file
+from tfacd.integrity.certification import canonical_manifest_bytes, verify_manifest, write_manifest
+from tfacd.integrity.signing import generate_keypair, sign_bytes, verify_bytes
 
 parser = argparse.ArgumentParser(description="Gate 5: certify a federated checkpoint for runtime release.")
 parser.add_argument("model", help="Path to the model checkpoint (.pt)")
@@ -46,10 +46,20 @@ if args.sign:
     if not private_key.exists():
         generate_keypair(private_key, public_key)
         print(f"generated new keypair: {private_key}, {public_key}")
+    # REVIEW FIX (Section 14): sign the CANONICAL MANIFEST (model hash +
+    # metadata + status together), not the model file's raw bytes. A
+    # model-file-only signature says nothing about the "status" field, so
+    # editing the manifest to claim "certified" would still verify against an
+    # untouched model signature. Signing the manifest itself closes that gap:
+    # any edit to status, metadata, or the recorded sha256 invalidates the
+    # signature, and sha256_ok (checked separately at verify time) still
+    # catches a model file being swapped out from under a manifest that
+    # wasn't re-signed.
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     signature_path = model_path.with_suffix(model_path.suffix + ".sig")
-    sign_file(model_path, private_key, signature_path)
-    print(f"signature: {signature_path}")
-    assert verify_file(model_path, public_key, signature_path)
-    print("signature verification: PASS")
+    signature_path.write_bytes(sign_bytes(canonical_manifest_bytes(manifest_payload), private_key))
+    print(f"signature: {signature_path} (over the manifest, not the raw model bytes)")
+    assert verify_bytes(canonical_manifest_bytes(manifest_payload), public_key, signature_path.read_bytes())
+    print("manifest signature verification: PASS")
 
 print(f"\nCertified: {model_path}")

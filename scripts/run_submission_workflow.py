@@ -27,6 +27,7 @@ from tfacd.trust_boundary.audit import AuditLogger
 from tfacd.trust_boundary.behavioral_trust import BehavioralTrustEngine
 from tfacd.trust_boundary.boundary import AdaptiveSemanticTrustBoundary
 from tfacd.trust_boundary.dynamic_trust import DynamicTrustScoreRegulator
+from tfacd.trust_boundary.executor_factory import build_executor
 from tfacd.trust_boundary.semantic_risk import SemanticRiskEngine
 
 
@@ -37,10 +38,20 @@ def capture(config_path: str, output_path: str) -> None:
     history = EntityHistory()
     context_generator = ThreatContextGenerator(config["runtime"]["threat_context_mapping"])
     decision_engine = build_decision_engine(config, history)
+    # REVIEW FIX (Section 40 - main runtime path != demonstration path): this
+    # used to construct AdaptiveSemanticTrustBoundary without an `executor=`
+    # argument at all, silently defaulting to SimulatedExecutor regardless of
+    # what configs/*.yaml's trust_boundary.executor.mode actually says - so
+    # this script's behavior could diverge from the configured runtime
+    # without any error or warning. executor_factory.build_executor(config) is
+    # the same canonical construction path scripts/run_streaming_demo.py and
+    # scripts/run_attack_scenario.py already use.
+    executor = build_executor(config)
     boundary = AdaptiveSemanticTrustBoundary(
         history=history,
         policy=policy,
         preprocessing_config=trust_config,
+        executor=executor,
         trust_regulator=DynamicTrustScoreRegulator(
             trust_config["weight_semantic_risk"],
             trust_config["weight_context_consistency"],

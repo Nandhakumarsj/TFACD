@@ -51,6 +51,11 @@ def main(grid: Grid, context: Context) -> None:
             reject_below_trust=float(integrity_cfg["reject_below_trust"]),
             aggregation_method=integrity_cfg.get("aggregation_method", "trimmed_mean"),
             trim_ratio=float(integrity_cfg["trim_ratio"]),
+            # REVIEW FIX (P0/P1 - security quorum bypass): see
+            # IntegrityAwareStrategy.__init__ docstring/comment. Defaults to 3
+            # (matching PCAClusterEMAFilter's own clustering floor) when not
+            # set in config.
+            min_security_quorum=int(integrity_cfg.get("min_security_quorum", 3)),
         )
     else:
         strategy = FedProx(**common_kwargs)
