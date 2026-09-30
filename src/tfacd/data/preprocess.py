@@ -80,10 +80,18 @@ def _feature_columns(
 
 
 def _coerce_numeric_like_columns(frame: pd.DataFrame) -> pd.DataFrame:
-    """Convert columns that are numeric-like in content to numeric dtypes before
-    feature selection. This avoids the bug where `pd.read_csv(..., dtype=str)` turns
-    every traffic metric into a string and then `ColumnTransformer` treats them as
-    categorical values instead of real numeric features.
+    """Normalize raw CSV dtypes before feature selection/transforming.
+
+    Numeric-like columns are converted to numeric dtypes so traffic metrics are
+    not accidentally one-hot encoded as categories. Columns that are genuinely
+    heterogeneous (for example a mixture of strings and floats in the same
+    column) are normalized so every non-missing categorical value is a string.
+    ``OneHotEncoder`` requires a categorical feature to have uniformly typed
+    values; leaving ``["foo", 1.0]`` as an object column causes sklearn to fail
+    during ``fit_transform`` with ``Got ['float', 'str']``.
+
+    Missing values remain ``np.nan`` so the downstream categorical
+    ``SimpleImputer`` can still handle them correctly.
     """
     out = frame.copy()
     for column in list(out.columns):
@@ -95,6 +103,12 @@ def _coerce_numeric_like_columns(frame: pd.DataFrame) -> pd.DataFrame:
         coerced = pd.to_numeric(non_null, errors="coerce")
         if coerced.notna().all():
             out[column] = pd.to_numeric(out[column], errors="coerce")
+        else:
+            # Genuinely categorical/object data may contain mixed Python types
+            # (e.g. strings plus numeric placeholders). Normalize only the
+            # non-missing values to strings; keep missing values as np.nan so
+            # SimpleImputer(strategy="most_frequent") still works as intended.
+            out[column] = out[column].map(lambda value: str(value) if pd.notna(value) else np.nan)
     return out
 
 
@@ -273,8 +287,8 @@ def _split_temporal_ids_by_session(
         train_count = total_sessions - test_count - val_count
 
     test_sessions = set(shuffled[:test_count])
-    train_sessions = set(shuffled[test_count:test_count + val_count])
-    val_sessions = set(shuffled[test_count + val_count:])
+    val_sessions = set(shuffled[test_count:test_count + val_count])
+    train_sessions = set(shuffled[test_count + val_count:])
 
     by_session = {session: seq_meta.index[seq_meta["session_id"] == session].to_numpy(dtype=np.int64) for session in shuffled}
     train_ids = np.concatenate([by_session[s] for s in train_sessions]) if train_sessions else np.array([], dtype=np.int64)

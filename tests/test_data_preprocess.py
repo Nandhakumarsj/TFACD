@@ -112,6 +112,29 @@ def test_numeric_features_are_coerced_before_transformer(tmp_path):
     assert result.x_train.dtype.kind == "f"
 
 
+def test_mixed_type_categorical_columns_are_normalized(tmp_path):
+    """Mixed string/float object columns must be made uniform before
+    OneHotEncoder sees them. This reproduces the sklearn failure:
+    ``TypeError: Encoders require their input argument must be uniformly
+    strings or numbers. Got ['float', 'str']``.
+    """
+    csv_path = tmp_path / "mixed_categorical.csv"
+    pd.DataFrame(
+        {
+            "sensor_label": ["temp", 1.0, "flow", np.nan, "pressure", 2.0],
+            "duration": [0.5, 1.1, 2.2, 3.3, 0.9, 1.4],
+            "Attack_label": [0, 1, 0, 1, 0, 1],
+        }
+    ).to_csv(csv_path, index=False)
+    config = _write_config(tmp_path, csv_path)
+    config["data"]["label_column"] = "Attack_label"
+
+    result = preprocess(config)
+
+    assert result.x_train.ndim == 2
+    assert result.x_train.dtype.kind == "f"
+
+
 def test_temporal_splits_are_session_safe(tmp_path):
     csv_path = tmp_path / "session_safe.csv"
     rows = []
@@ -119,10 +142,15 @@ def test_temporal_splits_are_session_safe(tmp_path):
         for i in range(6):
             rows.append(
                 {
-                    "frame.time": f"2024-01-01 00:00:{session:02d}.{i:02d}",
+                    # Two-minute gaps force the sessionizer to create four
+                    # distinct sessions with the default 30-second inactivity
+                    # threshold.
+                    "frame.time": f"2024-01-01 00:{session * 2:02d}:00.{i:02d}",
                     "ip.src_host": "10.0.0.1",
                     "ip.dst_host": "10.0.0.2",
-                    "tcp.srcport": 1000 + i,
+                    # Keep one stable 5-tuple per synthetic session so each
+                    # intended session remains one flow/session.
+                    "tcp.srcport": 1000 + session,
                     "tcp.dstport": 80,
                     "ip.proto": 6,
                     "pkt_size": float(i + session),
@@ -132,18 +160,32 @@ def test_temporal_splits_are_session_safe(tmp_path):
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     config = _write_config(tmp_path, csv_path, sequence_length=3)
 
-    train_ids, val_ids, test_ids = __import__("tfacd.data.preprocess", fromlist=["_split_temporal_ids_by_session"])._split_temporal_ids_by_session(
-        __import__("tfacd.data.preprocess", fromlist=["_split_temporal_ids_by_session"]).build_sequence_index(
-            pd.read_csv(csv_path), sequence_length=3, stride=1, timestamp_column="frame.time", group_columns=None, inactivity_seconds=30.0, label_column="Attack_type"
-        )[0],
-        test_size=0.25,
-        val_size=0.25,
-        seed=42,
+    preprocess_module = __import__(
+        "tfacd.data.preprocess",
+        fromlist=["_split_temporal_ids_by_session", "build_sequence_index"],
     )
+    seq_meta, _ = preprocess_module.build_sequence_index(
+        pd.read_csv(csv_path),
+        sequence_length=3,
+        stride=1,
+        timestamp_column="frame.time",
+        group_columns=None,
+        inactivity_seconds=30.0,
+        label_column="Attack_type",
+    )
+    train_ids, val_ids, test_ids = preprocess_module._split_temporal_ids_by_session(
+        seq_meta,
+         test_size=0.25,
+         val_size=0.25,
+         seed=42,
+     )
 
     assert set(train_ids).isdisjoint(set(val_ids))
     assert set(train_ids).isdisjoint(set(test_ids))
     assert set(val_ids).isdisjoint(set(test_ids))
+    assert seq_meta.iloc[train_ids]["session_id"].nunique() == 2
+    assert seq_meta.iloc[val_ids]["session_id"].nunique() == 1
+    assert seq_meta.iloc[test_ids]["session_id"].nunique() == 1
 
 
 def test_temporal_fallback_raises_instead_of_leaking(tmp_path):
@@ -159,7 +201,9 @@ def test_temporal_fallback_raises_instead_of_leaking(tmp_path):
                 "frame.time": f"2024-01-01 00:00:00.{i:02d}",
                 "ip.src_host": "10.0.0.1",
                 "ip.dst_host": "10.0.0.2",
-                "tcp.srcport": 1000 + i,
+                "Attack_label": 0,
+                # Stable flow key: all six rows belong to one session.
+                "tcp.srcport": 1000,
                 "tcp.dstport": 80,
                 "ip.proto": 6,
                 "pkt_size": float(i),

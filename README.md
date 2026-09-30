@@ -328,8 +328,7 @@ No ground truth for "this trust decision was actually wrong" existed anywhere on
 ```powershell
 # Look up and label a specific past decision (prints the full AuditEntry first, so you see
 # exactly what you're labeling before committing):
-python scripts/label_trust_decision.py --audit-log artifacts/streaming/audit_log.jsonl --sequence 42 `
-    --label false_positive --analyst-id "your-name" --rationale "block_source fired on benign traffic"
+python scripts/label_trust_decision.py --audit-log artifacts/streaming/audit_log.jsonl --sequence 42 --label false_positive --analyst-id "your-name" --rationale "block_source fired on benign traffic"
 
 # Once enough labels have accumulated (>= 20 distinct labeled decisions), report agreement
 # between analyst labels and trust_level_thresholds' actual behavior - reports only, never
