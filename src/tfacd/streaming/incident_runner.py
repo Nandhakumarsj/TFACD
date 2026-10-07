@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from tfacd.agentic.base import DecisionEngine
-from tfacd.runtime.contracts import IDSAlert, SessionContext, ThreatContext, TrustDecision
+from tfacd.runtime.contracts import CyberActionPlan, IDSAlert, SessionContext, ThreatContext, TrustDecision
 from tfacd.runtime.threat_context import ThreatContextGenerator
 from tfacd.trust_boundary.boundary import AdaptiveSemanticTrustBoundary
 
@@ -24,7 +24,7 @@ def run_incident(
     decision_engine: DecisionEngine,
     boundary: AdaptiveSemanticTrustBoundary,
     agent_id: str,
-) -> tuple[ThreatContext, TrustDecision]:
+) -> tuple[ThreatContext, CyberActionPlan, TrustDecision]:
     context = threat_context_generator.enrich(alert)
     plan = decision_engine.decide(alert, context)
     # A fresh session per incident, not one shared session for the whole run:
@@ -37,4 +37,4 @@ def run_incident(
         agent_id=agent_id, session_id=f"session-{alert.attack_type}", issued_at=datetime.now(timezone.utc), nonce=uuid4().hex,
     )
     decision = boundary.evaluate(plan, context, session)
-    return context, decision
+    return context, plan, decision

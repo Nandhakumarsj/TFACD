@@ -150,12 +150,23 @@ class PCAClusterEMAFilter:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
             projected = pca.fit_transform(scaled)
-        explained_variance_ratio = float(pca.explained_variance_ratio_.sum())
+        # PCA explained variance is a bounded reporting metric: [0, 1].
+        # Floating-point round-off can produce a tiny overshoot above 1.0
+        # on some client-update cohorts, so normalize the exposed metric
+        # without changing the PCA computation itself.
+        explained_variance_ratio = float(
+            np.sum(pca.explained_variance_ratio_, dtype=np.float64)
+        )
+
         if not np.isfinite(explained_variance_ratio):
             # Verified live: an unguarded NaN here makes json.dumps() silently
             # emit the invalid JSON literal `NaN` into the trust log, which a
             # strict JSON parser - e.g. any non-Python reader - rejects.
             explained_variance_ratio = 0.0
+        else:
+            explained_variance_ratio = float(
+                np.clip(explained_variance_ratio, 0.0, 1.0)
+            )
 
         if self.cluster_method == "dbscan":
             labels = DBSCAN(eps=1.5, min_samples=max(2, int(np.ceil(n_clients * 0.2)))).fit_predict(projected)

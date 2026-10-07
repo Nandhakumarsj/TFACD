@@ -102,8 +102,56 @@ boundary = AdaptiveSemanticTrustBoundary(
 alert_type_counts: dict[str, int] = {}
 expected_capability_seen = False
 for alert in incidents:
-    context, decision = run_incident(
+    context, plan, decision = run_incident(
         alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id=f"scenario_{scenario.name}",
+    )
+    print("\n" + "=" * 60)
+    print(f"INCIDENT {alert.attack_type}")
+    print("=" * 60)
+
+    print(f"Detected attack : {alert.attack_type}")
+    print(f"IDS confidence  : {alert.confidence:.3f}")
+    print(f"Severity        : {context.severity}")
+    print(f"Priority        : {context.priority}")
+    print(f"Agent engine    : {plan.engine}")
+
+    print("\nAgent plan:")
+    for index, action in enumerate(plan.actions, start=1):
+        print(
+            f"  {index}. {action.capability:<18} "
+            f"target={action.target or 'none'} "
+            f"params={action.parameters}"
+        )
+
+    print("\nTrust evaluation:")
+    if decision.scores is not None:
+        print(f"  semantic_risk       = {decision.scores.semantic_risk:.3f}")
+        print(f"  context_consistency = {decision.scores.context_consistency:.3f}")
+        print(f"  behavioral_trust    = {decision.scores.behavioral_trust:.3f}")
+        print(f"  trust_value         = {decision.scores.trust_value:.3f}")
+
+    print(f"  trust_level         = {decision.trust_level}")
+    print(f"  autonomy_mode       = {decision.autonomy_mode}")
+
+    print("\nDecision:")
+    if decision.trust_level is None:
+        print("  Trust boundary      : REJECTED before trust scoring")
+    elif decision.autonomy_mode == "recommendation":
+        for action in plan.actions:
+            print(f"  {action.capability:<20}: RECOMMENDED")
+    elif decision.autonomy_mode == "restricted_action":
+        for action in plan.actions:
+            print(f"  {action.capability:<20}: eligible only if low-risk")
+    elif decision.autonomy_mode == "autonomous_execution":
+        for action in plan.actions:
+            print(f"  {action.capability:<20}: AUTHORIZED")
+
+    print("\nExecution:")
+    print(f"  executor_mode       = {decision.executor_mode}")
+    print(f"  execution_status    = {decision.execution_status}")
+    print(
+        f"  executed            = "
+        f"{', '.join(decision.executed_actions) if decision.executed_actions else 'none'}"
     )
     alert_type_counts[alert.attack_type] = alert_type_counts.get(alert.attack_type, 0) + 1
     if scenario.expected_capability is not None and scenario.expected_capability in decision.executed_actions:

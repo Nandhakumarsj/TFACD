@@ -92,7 +92,7 @@ def test_load_scenarios_parses_real_yaml_shape(tmp_path):
 
 def test_real_attack_scenarios_config_loads_and_references_real_dataset_paths():
     """configs/attack_scenarios.yaml itself must parse and every referenced
-    csv_path/pcap_path must be a real path under datasets/Edge_IIoTset (skips
+    csv_path/pcap_path must be a real path under datasets/Edge_IIoT (skips
     the actual-file-exists check if the (large, gitignored) dataset isn't
     present on this machine - this test only guards the YAML/path shape)."""
     scenarios = load_scenarios("configs/attack_scenarios.yaml")
@@ -100,5 +100,5 @@ def test_real_attack_scenarios_config_loads_and_references_real_dataset_paths():
     for scenario in scenarios.values():
         assert len(scenario.steps) >= 1
         for step in scenario.steps:
-            assert "datasets/Edge_IIoTset" in step.csv_path
-            assert "datasets/Edge_IIoTset" in step.pcap_path
+            assert "datasets/Edge_IIoT" in step.csv_path
+            assert "datasets/Edge_IIoT" in step.pcap_path

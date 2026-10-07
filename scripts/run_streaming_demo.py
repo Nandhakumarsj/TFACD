@@ -125,7 +125,7 @@ boundary = AdaptiveSemanticTrustBoundary(
 
 print()
 for alert in incidents:
-    context, decision = run_incident(
+    context, plan, decision = run_incident(
         alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="streaming_ids_v1",
     )
     print(

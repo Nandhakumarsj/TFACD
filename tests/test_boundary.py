@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from tfacd.agentic.history import EntityHistory
 from tfacd.common.config import load_config
-from tfacd.runtime.contracts import CyberAction, CyberActionPlan, IDSAlert, SessionContext, ThreatContext
+from tfacd.runtime.contracts import CyberAction, CyberActionPlan, IDSAlert, SessionContext, ThreatContext, TrustScores
 from tfacd.trust_boundary.audit import AuditLogger
 from tfacd.trust_boundary.behavioral_trust import BehavioralTrustEngine
 from tfacd.trust_boundary.boundary import AdaptiveSemanticTrustBoundary
@@ -21,12 +21,31 @@ HIGH_RISK = set(POLICY["capability_whitelist"]["high_risk"])
 THRESHOLDS = {"low": 0.40, "medium": 0.65, "high": 0.85}
 
 
-def build_boundary(tmp_path, executor=None):
+class AlwaysVerifiedRegulator:
+    """Deterministic test double for tests that specifically exercise the
+    autonomous-execution path. Production trust thresholds remain unchanged."""
+
+    def evaluate(self, semantic_risk, context_consistency, behavioral_trust):
+        return TrustScores(
+            semantic_risk=semantic_risk,
+            context_consistency=context_consistency,
+            behavioral_trust=behavioral_trust,
+            trust_value=1.0,
+        )
+
+    def trust_level(self, trust_value):
+        return "verified"
+
+    def autonomy_mode(self, trust_level):
+        return "autonomous_execution"
+
+
+def build_boundary(tmp_path, executor=None, trust_regulator=None):
     return AdaptiveSemanticTrustBoundary(
         history=EntityHistory(),
         policy=POLICY,
         preprocessing_config=PREPROCESSING_CONFIG,
-        trust_regulator=DynamicTrustScoreRegulator(0.4, 0.3, 0.3, THRESHOLDS),
+        trust_regulator=trust_regulator or DynamicTrustScoreRegulator(0.4, 0.3, 0.3, THRESHOLDS),
         semantic_risk_engine=SemanticRiskEngine(force_fallback=True),
         behavioral_trust_engine=BehavioralTrustEngine(high_risk_capabilities=HIGH_RISK, seed=0),
         audit_logger=AuditLogger(tmp_path / "audit.jsonl"),
@@ -46,7 +65,7 @@ def test_happy_path_executes_actions(tmp_path):
         rationale="Medium severity Port_Scanning detected; recommending block_source, increase_logging for investigation and containment.",
         actions=[CyberAction(capability="block_source", target="10.0.0.5"), CyberAction(capability="increase_logging", target="plc-01")],
     )
-    decision = build_boundary(tmp_path).evaluate(plan, context, make_session("agent-happy"))
+    decision = build_boundary(tmp_path, trust_regulator=AlwaysVerifiedRegulator()).evaluate(plan, context, make_session("agent-happy"))
 
     assert decision.terminal_stage == "capability_enforcement"
     assert decision.accepted
@@ -147,7 +166,7 @@ def test_execution_status_partially_executed_when_some_actions_fail(tmp_path):
         rationale="Medium severity Port_Scanning detected; recommending block_source, increase_logging for investigation and containment.",
         actions=[CyberAction(capability="block_source", target="10.0.0.5"), CyberAction(capability="increase_logging", target="plc-01")],
     )
-    decision = build_boundary(tmp_path, executor=FailsSpecificCapabilityExecutor()).evaluate(plan, context, make_session("agent-exec-partial"))
+    decision = build_boundary(tmp_path, executor=FailsSpecificCapabilityExecutor(), trust_regulator=AlwaysVerifiedRegulator()).evaluate(plan, context, make_session("agent-exec-partial"))
 
     assert decision.executed_actions == ["block_source"]
     assert decision.execution_status == "partially_executed"

@@ -63,7 +63,7 @@ def test_real_ollama_decision_respects_the_allowed_playbook_ceiling():
     assert plan.incident_id.startswith(f"{alert.source_id}-{context.priority}-")
 
 
-def test_real_ollama_plan_passes_the_full_trust_boundary():
+def test_real_ollama_plan_passes_the_full_trust_boundary(tmp_path):
     """The point of the whole design: an LLM-authored plan must survive the same
     unmodified ASTB the deterministic engine's plans go through."""
     config = load_config("configs/edge_iiot.yaml")
@@ -97,7 +97,7 @@ def test_real_ollama_plan_passes_the_full_trust_boundary():
         ),
         semantic_risk_engine=SemanticRiskEngine(force_fallback=True),
         behavioral_trust_engine=BehavioralTrustEngine(high_risk_capabilities=set(policy["capability_whitelist"]["high_risk"]), seed=0),
-        audit_logger=AuditLogger(Path("artifacts/agentic/ollama_integration_audit.jsonl")),
+        audit_logger=AuditLogger(tmp_path / "ollama_integration_audit.jsonl"),
     )
     session = SessionContext(agent_id="ollama_integration_test", session_id="s", issued_at=datetime.now(timezone.utc), nonce="n")
     decision = boundary.evaluate(plan, context, session)

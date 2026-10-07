@@ -6,7 +6,7 @@ import pytest
 from tfacd.streaming.pcap_timing import PcapFormatError, iter_packet_timestamps, packet_count
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REAL_SMALL_PCAP = REPO_ROOT / "datasets" / "Edge_IIoTset" / "Attack traffic" / "OS Fingerprinting attack.pcap"
+REAL_SMALL_PCAP = REPO_ROOT / "datasets" / "Edge_IIoT" / "Attack traffic" / "OS Fingerprinting attack.pcap"
 
 
 def _write_synthetic_pcap(path: Path, records: list[tuple[int, int, bytes]], endian: str = "<") -> None:

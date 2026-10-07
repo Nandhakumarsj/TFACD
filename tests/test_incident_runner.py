@@ -42,7 +42,7 @@ def test_run_incident_produces_a_finalized_decision_through_the_real_pipeline(tm
     threat_context_generator, decision_engine, boundary = build_pipeline(tmp_path)
     alert = IDSAlert(attack_type="Port_Scanning", confidence=0.8, source_id="10.0.0.5", target_asset="plc-01")
 
-    context, decision = run_incident(
+    context, plan, decision = run_incident(
         alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="scenario-agent",
     )
 
@@ -55,8 +55,8 @@ def test_run_incident_uses_a_fresh_nonce_each_call_so_repeated_incidents_are_nev
     threat_context_generator, decision_engine, boundary = build_pipeline(tmp_path)
     alert = IDSAlert(attack_type="Port_Scanning", confidence=0.8, source_id="10.0.0.5", target_asset="plc-01")
 
-    _, first = run_incident(alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="scenario-agent")
-    _, second = run_incident(alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="scenario-agent")
+    _, _, first = run_incident(alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="scenario-agent")
+    _, _, second = run_incident(alert, threat_context_generator=threat_context_generator, decision_engine=decision_engine, boundary=boundary, agent_id="scenario-agent")
 
     assert not any("nonce replay" in reason for result in (first, second) for stage in result.stage_results for reason in stage.reasons)
 
