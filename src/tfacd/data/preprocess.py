@@ -207,19 +207,55 @@ def _preprocess_row_based(config: dict[str, Any], frame: pd.DataFrame) -> Prepar
     seed = int(config.get("seed", 42))
     test_size = float(cfg.get("test_size", 0.15))
     val_size = float(cfg.get("validation_size", 0.15))
+    split_strategy = cfg.get("split_strategy", "row_random")
 
-    idx = np.arange(len(y))
-    idx_train_val, idx_test, y_train_val, y_test = train_test_split(
-        idx, y, test_size=test_size, random_state=seed, stratify=y
-    )
-    relative_val = val_size / (1.0 - test_size)
-    idx_train, idx_val, y_train, y_val = train_test_split(
-        idx_train_val,
-        y_train_val,
-        test_size=relative_val,
-        random_state=seed,
-        stratify=y_train_val,
-    )
+    if split_strategy == "session_temporal":
+        temporal_cfg = cfg.get("temporal", {})
+        timestamp_column = temporal_cfg.get("timestamp_column", cfg.get("timestamp_column", "auto"))
+        if timestamp_column == "auto":
+            timestamp_column = _find_candidate(list(frame.columns), TIME_CANDIDATES)
+        if not timestamp_column:
+            raise ValueError("data.split_strategy='session_temporal' requires a timestamp column")
+        seq_meta, window_indices = build_sequence_index(
+            frame, sequence_length=1, stride=1, timestamp_column=timestamp_column,
+            group_columns=temporal_cfg.get("group_columns"),
+            inactivity_seconds=temporal_cfg.get("inactivity_seconds", 30.0),
+            label_column=target_col,
+        )
+        train_ids, val_ids, test_ids = _split_temporal_ids_by_session(
+            seq_meta, test_size=test_size, val_size=val_size, seed=seed, chronological=True
+        )
+        if len(train_ids) == 0 or len(val_ids) == 0 or len(test_ids) == 0:
+            raise ValueError(
+                "Session-safe temporal row split failed: each of train/validation/test must contain at least one session. "
+                f"Found train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} windows across "
+                f"{seq_meta['session_id'].nunique()} session(s)."
+            )
+        idx_train = window_indices[train_ids, 0]
+        idx_val = window_indices[val_ids, 0]
+        idx_test = window_indices[test_ids, 0]
+        y_train, y_val, y_test = y[idx_train], y[idx_val], y[idx_test]
+        split_metadata = {
+            "split_strategy": "session_temporal",
+            "timestamp_column": timestamp_column,
+            "inactivity_seconds": temporal_cfg.get("inactivity_seconds", 30.0),
+            "sessions_train": int(seq_meta.iloc[train_ids]["session_id"].nunique()),
+            "sessions_val": int(seq_meta.iloc[val_ids]["session_id"].nunique()),
+            "sessions_test": int(seq_meta.iloc[test_ids]["session_id"].nunique()),
+        }
+    elif split_strategy == "row_random":
+        idx = np.arange(len(y))
+        idx_train_val, idx_test, y_train_val, y_test = train_test_split(
+            idx, y, test_size=test_size, random_state=seed, stratify=y
+        )
+        relative_val = val_size / (1.0 - test_size)
+        idx_train, idx_val, y_train, y_val = train_test_split(
+            idx_train_val, y_train_val, test_size=relative_val, random_state=seed, stratify=y_train_val
+        )
+        split_metadata = {"split_strategy": "row_random"}
+    else:
+        raise ValueError(f"unknown data.split_strategy={split_strategy!r}; expected 'row_random' or 'session_temporal'")
+
     x_train, x_val, x_test = x.iloc[idx_train], x.iloc[idx_val], x.iloc[idx_test]
 
     transformer, numeric, categorical = _build_transformer(x_train)
@@ -230,6 +266,7 @@ def _preprocess_row_based(config: dict[str, Any], frame: pd.DataFrame) -> Prepar
     auto_drop = sorted(set(auto_drop))
     metadata = {
         "split_mode": "row",
+        **split_metadata,
         "target_column": target_col,
         "input_columns": list(x.columns),
         "numeric_columns": numeric,
@@ -261,41 +298,149 @@ def _split_temporal_ids_by_session(
     test_size: float,
     val_size: float,
     seed: int = 42,
+    chronological: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Split temporal windows at the session boundary to avoid train/test leakage.
-    Windows from the same session stay together in exactly one split.
+    """Split windows by session, optionally preserving chronological order.
+
+    With chronological=True:
+        earliest sessions -> train
+        next sessions     -> validation
+        latest sessions   -> test
+
+    All windows belonging to one session remain within one split.
     """
+    required = {"session_id"}
+    missing = required - set(seq_meta.columns)
+    if missing:
+        raise KeyError(f"Missing required columns: {sorted(missing)}")
+
     session_ids = seq_meta["session_id"].drop_duplicates().to_numpy()
+
     if len(session_ids) == 0:
-        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+        empty = np.array([], dtype=np.int64)
+        return empty.copy(), empty.copy(), empty.copy()
 
-    rng = np.random.default_rng(seed)
-    shuffled = session_ids.copy()
-    rng.shuffle(shuffled)
+    if chronological:
+        if "start_time" not in seq_meta:
+            raise ValueError(
+                "chronological=True requires a start_time column"
+            )
 
-    total_sessions = len(shuffled)
-    test_count = max(1, int(round(total_sessions * test_size))) if total_sessions > 1 else 1
-    val_count = max(1, int(round(total_sessions * val_size))) if total_sessions > 2 else 0
+        start_times = pd.to_datetime(
+            seq_meta["start_time"],
+            format="ISO8601",
+            errors="coerce",
+            utc=True,
+        )
+
+        if start_times.isna().any():
+            raise ValueError(
+                "chronological split cannot proceed because start_time "
+                "contains missing or invalid timestamps"
+            )
+
+        # Determine each session's earliest start time, then order sessions
+        # from earliest to latest. Stable sorting makes tie handling deterministic.
+        timed = pd.DataFrame(
+            {
+                "session_id": seq_meta["session_id"].to_numpy(),
+                "_start_time": start_times.to_numpy(),
+            }
+        )
+
+        session_starts = timed.groupby(
+            "session_id",
+            sort=False,
+        )["_start_time"].min()
+
+        ordered_sessions = session_starts.sort_values(
+            kind="mergesort"
+        ).index.to_numpy()
+
+    else:
+        rng = np.random.default_rng(seed)
+        ordered_sessions = session_ids.copy()
+        rng.shuffle(ordered_sessions)
+
+    # Preserve the project's existing size-allocation policy.
+    total_sessions = len(ordered_sessions)
+
+    test_count = (
+        max(1, int(round(total_sessions * test_size)))
+        if total_sessions > 1
+        else 1
+    )
+
+    val_count = (
+        max(1, int(round(total_sessions * val_size)))
+        if total_sessions > 2
+        else 0
+    )
+
     if total_sessions <= 3:
-        train_count = max(1, total_sessions - test_count - val_count)
+        train_count = max(
+            1,
+            total_sessions - test_count - val_count,
+        )
     else:
         train_count = total_sessions - test_count - val_count
+
     if train_count <= 0:
         train_count = 1
+
     if test_count + val_count >= total_sessions:
-        val_count = max(0, total_sessions - test_count - 1)
+        val_count = max(
+            0,
+            total_sessions - test_count - 1,
+        )
         train_count = total_sessions - test_count - val_count
 
-    test_sessions = set(shuffled[:test_count])
-    val_sessions = set(shuffled[test_count:test_count + val_count])
-    train_sessions = set(shuffled[test_count + val_count:])
+    if chronological:
+        # Do not shuffle these groups: assign contiguous chronological ranges.
+        train_sessions = ordered_sessions[:train_count]
 
-    by_session = {session: seq_meta.index[seq_meta["session_id"] == session].to_numpy(dtype=np.int64) for session in shuffled}
-    train_ids = np.concatenate([by_session[s] for s in train_sessions]) if train_sessions else np.array([], dtype=np.int64)
-    val_ids = np.concatenate([by_session[s] for s in val_sessions]) if val_sessions else np.array([], dtype=np.int64)
-    test_ids = np.concatenate([by_session[s] for s in test_sessions]) if test_sessions else np.array([], dtype=np.int64)
+        val_sessions = ordered_sessions[
+            train_count : train_count + val_count
+        ]
+
+        test_sessions = ordered_sessions[
+            train_count + val_count :
+        ]
+
+    else:
+        # Preserve the existing randomized, but session-safe, split.
+        test_sessions = ordered_sessions[:test_count]
+
+        val_sessions = ordered_sessions[
+            test_count : test_count + val_count
+        ]
+
+        train_sessions = ordered_sessions[
+            test_count + val_count :
+        ]
+
+    # Use positional row indices because the returned IDs index seq_meta and
+    # window_indices, rather than relying on seq_meta's external index labels.
+    session_values = seq_meta["session_id"].to_numpy()
+
+    def indices_for(sessions: np.ndarray) -> np.ndarray:
+        pieces = [
+            np.flatnonzero(session_values == session)
+            for session in sessions
+        ]
+
+        pieces = [piece for piece in pieces if len(piece)]
+
+        if not pieces:
+            return np.array([], dtype=np.int64)
+
+        return np.concatenate(pieces).astype(np.int64, copy=False)
+
+    train_ids = indices_for(train_sessions)
+    val_ids = indices_for(val_sessions)
+    test_ids = indices_for(test_sessions)
+
     return train_ids, val_ids, test_ids
-
 
 def _preprocess_temporal(config: dict[str, Any], frame: pd.DataFrame) -> PreparedData:
     cfg = config["data"]
@@ -332,7 +477,10 @@ def _preprocess_temporal(config: dict[str, Any], frame: pd.DataFrame) -> Prepare
     seed = int(config.get("seed", 42))
     test_size = float(cfg.get("test_size", 0.15))
     val_size = float(cfg.get("validation_size", 0.15))
-    train_ids, val_ids, test_ids = _split_temporal_ids_by_session(seq_meta, test_size, val_size, seed=seed)
+    train_ids, val_ids, test_ids = _split_temporal_ids_by_session(
+        seq_meta, test_size, val_size, seed=seed,
+        chronological=bool(temporal_cfg.get("chronological_split", True)),
+    )
 
     # REVIEW FIX (P0 - leakage-safe split fallback): this used to silently fall
     # back to a random sequence-level train_test_split whenever the session-safe

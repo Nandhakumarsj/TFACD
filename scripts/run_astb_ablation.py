@@ -47,7 +47,7 @@ for label, specs in (("coarse", ABLATIONS), ("component", COMPONENT_ABLATIONS)):
     print(f"{'variant':<24} {'F1':>8} {'FAR':>8} {'UABR':>8} {'SAPR':>8} {'PI success':>12} {'Tool allow':>11} {'p95 ms':>10}")
     for name, metric in summary["variants"].items():
         print(
-            f"{name:<24} {metric['macro_f1']:>8.3f} {metric['false_allow_rate']:>8.3f} "
+            f"{name:<24} {metric['macro_f1']:>8.3f} {metric['false_authorization_rate']:>8.3f} "
             f"{metric['unsafe_action_blocking_rate']:>8.3f} {metric['safe_action_preservation_rate']:>8.3f} "
             f"{metric['prompt_injection_success_rate']:>12.3f} {metric['unauthorized_tool_call_rate']:>11.3f} "
             f"{metric['latency_p95_ms']:>10.2f}"

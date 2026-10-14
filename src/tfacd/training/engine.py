@@ -51,9 +51,10 @@ def train_one_epoch(
             # FedProx (https://arxiv.org/abs/1812.06127): penalize local drift from the
             # global round weights so heterogeneous clients don't diverge from each other.
             proximal_term = sum(
-                (local_p - global_p.to(device)).norm(2) for local_p, global_p in zip(model.parameters(), global_params)
+                torch.sum((local_p - global_p.to(device)) ** 2)
+                for local_p, global_p in zip(model.parameters(), global_params)
             )
-            loss = loss + (proximal_mu / 2) * proximal_term
+        loss = loss + (proximal_mu / 2) * proximal_term
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite loss encountered")
         loss.backward()

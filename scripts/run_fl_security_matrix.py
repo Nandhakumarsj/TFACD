@@ -157,9 +157,14 @@ def run_one(mode, attack, malicious_fraction):
                 global_params=global_params,
             )
             trained = state_numpy(model)
+
             if cid in malicious_ids:
                 if attack == "sign_flip":
-                    trained = sign_flip(trained, scale=1.0)
+                    trained = sign_flip(
+                        trained,
+                        global_state,
+                        scale=1.0,
+                    )
                 elif attack == "gaussian_noise":
                     trained = gaussian_noise(trained, sigma=float(integ.get("attack_gaussian_sigma", 0.5)), seed=seed + round_index * 100 + cid)
                 elif attack == "gradual_scaling":

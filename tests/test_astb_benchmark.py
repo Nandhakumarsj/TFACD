@@ -30,6 +30,9 @@ def test_generated_benchmark_is_deterministic_and_covers_taxonomy():
     assert [x.to_dict() for x in a] == [x.to_dict() for x in b]
     categories = {x.attack_category for x in a}
     assert {"prompt_level", "tool", "context", "behavior", "execution", "control"} <= categories
+    counts = {category: sum(x.attack_category == category for x in a) for category in categories}
+    assert counts["control"] == 40
+    assert all(counts[category] == 32 for category in ("prompt_level", "tool", "context", "behavior", "execution"))
     assert all(x.expected_decision in DECISIONS for x in a)
 
 

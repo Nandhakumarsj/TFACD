@@ -162,7 +162,11 @@ def run_benchmark(
                     trained_state = _state_to_numpy(model.state_dict())
 
                     if client_id in malicious and scenario == "sign_flip":
-                        trained_state = sign_flip(trained_state, scale=1.0)
+                        trained_state = sign_flip(
+                            trained_state,
+                            global_state,
+                            scale=1.0,
+                        )
                     elif client_id in malicious and scenario == "gaussian_noise":
                         trained_state = gaussian_noise(
                             trained_state, sigma=float(integ_cfg.get("attack_gaussian_sigma", 0.5)), seed=run_seed + round_index
