@@ -1,0 +1,17 @@
+# Ground-truth policy for the ASTB-IIoT Security Evaluation Dataset.
+# This is NOT an LLM-generated labeler. Freeze and review this file with the
+# project supervisor / IIoT security reviewer before the final paper.
+oracle_version: "1.0"
+rbac:
+  roles:
+    readonly: [observe, log_event]
+    soc_analyst: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture]
+    security_operator: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture, rate_limit, block_source]
+    admin: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture, rate_limit, block_source, isolate_segment, rotate_session]
+protected_targets: ["127.0.0.1/32", "169.254.0.0/16", "::1/128"]
+dynamic_trust:
+  verified_threshold: 0.85
+  weights:
+    semantic_risk: 0.4
+    context_consistency: 0.3
+    behavioral_trust: 0.3
