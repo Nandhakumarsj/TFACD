@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import platform
 from pathlib import Path
+
+import numpy as np
+import sklearn
 
 from tfacd.evaluation.astb_benchmark import (
     SecurityPolicyOracle,
@@ -24,9 +29,17 @@ args = parser.parse_args()
 config = load_config(args.config)
 policy = load_config(config["runtime"]["trust_policy_path"])
 threat_mapping = load_threat_mapping(config["runtime"]["threat_context_mapping"])
-oracle = SecurityPolicyOracle(load_oracle_config(args.oracle), policy, threat_mapping)
+oracle_cfg = load_oracle_config(args.oracle)
+oracle = SecurityPolicyOracle(oracle_cfg, policy, threat_mapping)
 oracle.validate()
-scenarios = generate_scenarios(args.count, seed=args.seed, oracle=oracle)
+
+def sha256(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+oracle_hash = sha256(args.oracle)
+scenarios = generate_scenarios(
+    args.count, seed=args.seed, oracle=oracle, oracle_sha256=oracle_hash
+)
 
 out = Path(args.output_dir)
 out.mkdir(parents=True, exist_ok=True)
@@ -47,10 +60,18 @@ with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer.writerow(flattened)
 
 manifest = {
-    "oracle_version": load_oracle_config(args.oracle)["oracle_version"],
+    "experiment": "ASTB-IIoT security benchmark dataset generation",
+    "oracle_version": oracle_cfg["oracle_version"],
     "oracle_path": str(Path(args.oracle)),
+    "oracle_sha256": oracle_hash,
+    "policy_sha256": sha256(config["runtime"]["trust_policy_path"]),
+    "threat_mapping_sha256": sha256(config["runtime"]["threat_context_mapping"]),
     "seed": args.seed,
     "count": len(scenarios),
+    "python_version": platform.python_version(),
+    "numpy_version": np.__version__,
+    "scikit_learn_version": sklearn.__version__,
+    "context_consistency_threshold": oracle.context_consistency_threshold,
     "taxonomy": {k: len(v) for k, v in __import__("tfacd.evaluation.astb_benchmark", fromlist=["ATTACK_TAXONOMY"]).ATTACK_TAXONOMY.items()},
     "label_distribution": {},
 }

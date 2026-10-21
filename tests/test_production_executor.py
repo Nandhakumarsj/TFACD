@@ -60,9 +60,9 @@ def test_linux_block_source_uses_nftables_when_available(tmp_path, monkeypatch):
     assert runner.calls[-1] == ["nft", "add", "rule", "inet", "tfacd", "input", "ip", "saddr", "203.0.113.5", "drop"]
 
 
-def test_linux_rate_limit_adds_accept_then_drop_rule(monkeypatch):
+def test_linux_rate_limit_adds_accept_then_drop_rule(tmp_path, monkeypatch):
     monkeypatch.setattr("tfacd.trust_boundary.production_executor.shutil.which", lambda name: "/usr/sbin/nft")
-    executor, runner = make_executor("Linux")
+    executor, runner = make_executor("Linux", action_log_path=tmp_path / "actions.jsonl")
     action = CyberAction(capability="rate_limit", target="203.0.113.5", parameters={"requests_per_second": 25})
 
     executor.execute(action)
@@ -72,9 +72,9 @@ def test_linux_rate_limit_adds_accept_then_drop_rule(monkeypatch):
     assert runner.calls[-1] == ["nft", "add", "rule", "inet", "tfacd", "input", "ip", "saddr", "203.0.113.5", "drop"]
 
 
-def test_linux_falls_back_to_iptables_when_nft_missing(monkeypatch):
+def test_linux_falls_back_to_iptables_when_nft_missing(tmp_path, monkeypatch):
     monkeypatch.setattr("tfacd.trust_boundary.production_executor.shutil.which", lambda name: None)
-    executor, runner = make_executor("Linux")
+    executor, runner = make_executor("Linux", action_log_path=tmp_path / "actions.jsonl")
     action = CyberAction(capability="block_source", target="203.0.113.5")
 
     result = executor.execute(action)

@@ -58,12 +58,74 @@ def sign_flip(
 
     return poisoned
 
-def gaussian_noise(state: Mapping[str, np.ndarray], sigma: float, seed: int) -> dict[str, np.ndarray]:
+def state_delta_l2_norm(
+    candidate: Mapping[str, np.ndarray],
+    reference: Mapping[str, np.ndarray],
+) -> float:
+    """L2 norm of floating-point state deltas; integer buffers are excluded."""
+    if candidate.keys() != reference.keys():
+        raise ValueError("candidate and reference must have identical keys")
+    squared = 0.0
+    for key, reference_value in reference.items():
+        ref = np.asarray(reference_value)
+        value = np.asarray(candidate[key])
+        if value.shape != ref.shape:
+            raise ValueError(f"Shape mismatch for {key!r}: candidate={value.shape}, reference={ref.shape}")
+        if np.issubdtype(value.dtype, np.floating):
+            delta = value.astype(np.float64, copy=False) - ref.astype(np.float64, copy=False)
+            squared += float(np.dot(delta.ravel(), delta.ravel()))
+    return float(np.sqrt(squared))
+
+
+def gaussian_noise(
+    client_state: Mapping[str, np.ndarray],
+    global_state: Mapping[str, np.ndarray],
+    sigma: float,
+    seed: int,
+) -> dict[str, np.ndarray]:
+    """Perturb a client update with update-normalized Gaussian noise.
+
+    Let delta = W_client - W_global. The scalar ``sigma`` is a dimensionless
+    relative strength: epsilon is sampled elementwise from N(0, (sigma * RMS(delta))^2),
+    where RMS(delta) = ||delta||_2 / sqrt(number of floating-point parameters).
+    Thus the expected noise L2 norm is approximately ``sigma * ||delta||_2``
+    across a large model, rather than applying an arbitrary 0.5 to absolute
+    weights whose scales can differ by orders of magnitude.
+
+    Integer/non-floating buffers are preserved from the client's trained state.
+    Inputs are never mutated. A zero update produces zero perturbation, avoiding
+    noise unrelated to a client's actual contribution.
+    """
+    if not np.isfinite(float(sigma)) or sigma < 0:
+        raise ValueError("sigma must be finite and non-negative")
+    if client_state.keys() != global_state.keys():
+        raise ValueError("client_state and global_state must have identical keys")
+
+    total_elements = 0
+    update_norm = state_delta_l2_norm(client_state, global_state)
+    for key, global_value in global_state.items():
+        client_value = np.asarray(client_state[key])
+        global_value = np.asarray(global_value)
+        if client_value.shape != global_value.shape:
+            raise ValueError(
+                f"Shape mismatch for {key!r}: client={client_value.shape}, global={global_value.shape}"
+            )
+        if np.issubdtype(client_value.dtype, np.floating):
+            total_elements += client_value.size
+
+    noise_std = sigma * update_norm / np.sqrt(total_elements) if total_elements and update_norm else 0.0
     rng = np.random.default_rng(seed)
-    return {
-        key: (np.asarray(value) + rng.normal(0.0, sigma, size=np.asarray(value).shape)).astype(np.asarray(value).dtype)
-        for key, value in state.items()
-    }
+    poisoned: dict[str, np.ndarray] = {}
+    for key, global_value in global_state.items():
+        client_value = np.asarray(client_state[key])
+        if np.issubdtype(client_value.dtype, np.floating):
+            noise = rng.normal(0.0, noise_std, size=client_value.shape)
+            poisoned[key] = (client_value.astype(np.float64, copy=False) + noise).astype(
+                client_value.dtype, copy=False
+            )
+        else:
+            poisoned[key] = client_value.copy()
+    return poisoned
 
 
 def gradual_scaling(

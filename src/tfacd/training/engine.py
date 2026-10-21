@@ -54,7 +54,7 @@ def train_one_epoch(
                 torch.sum((local_p - global_p.to(device)) ** 2)
                 for local_p, global_p in zip(model.parameters(), global_params)
             )
-        loss = loss + (proximal_mu / 2) * proximal_term
+            loss = loss + (proximal_mu / 2) * proximal_term
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite loss encountered")
         loss.backward()

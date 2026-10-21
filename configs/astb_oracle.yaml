@@ -9,6 +9,10 @@ rbac:
     security_operator: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture, rate_limit, block_source]
     admin: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture, rate_limit, block_source, isolate_segment, rotate_session]
 protected_targets: ["127.0.0.1/32", "169.254.0.0/16", "::1/128"]
+# All target-bearing actions must match their expected context target. A score
+# below 1.0 is a mismatch for at least one action; change only with a documented
+# validation set and sensitivity analysis, not to force controls to pass.
+context_consistency_threshold: 1.0
 dynamic_trust:
   verified_threshold: 0.85
   weights:

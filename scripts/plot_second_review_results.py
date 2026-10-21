@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 parser = argparse.ArgumentParser(description="Create individual second-review figures from machine-readable experiment outputs.")
-parser.add_argument("--ablation", default="artifacts/astb_benchmark/component_ablation_summary.json")
-parser.add_argument("--fl", default="artifacts/integrity/fl_security_matrix.json")
+parser.add_argument("--ablation", default="artifacts/second_review/astb/component_ablation_summary.json")
+parser.add_argument("--fl", default="artifacts/second_review/fl_security_matrix.json")
 parser.add_argument("--output-dir", default="artifacts/second_review_figures")
 args = parser.parse_args()
 
@@ -54,7 +54,7 @@ if Path(args.fl).exists():
         ax.set_xlabel("Malicious clients (%)")
         ax.set_ylabel("Macro-F1 (%)")
         ax.set_title(f"FL robustness: {mode} under {attack}")
-        ax.set_xticks([10, 20, 30])
+        ax.set_xticks([0, 10, 20, 30])
         ax.legend()
         fig.tight_layout()
         safe = f"fl_{mode}_{attack}".replace("/", "_")

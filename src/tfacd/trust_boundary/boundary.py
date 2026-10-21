@@ -76,6 +76,11 @@ class AdaptiveSemanticTrustBoundary:
 
         eligible = capability_enforcement.eligible_actions(plan, autonomy_mode, self.policy, context)
         executed_actions = capability_enforcement.enforce(plan, autonomy_mode, self.policy, self.executor, context)
+        print("autonomy_mode:", autonomy_mode)
+        print("plan actions:", [a.capability for a in plan.actions])
+        print("allowed playbooks:", context.allowed_playbooks)
+        print("eligible actions:", eligible)
+        print("executed actions:", executed_actions)
         accepted = autonomy_mode != "read_only"
         execution_status = _execution_status(eligible, executed_actions, getattr(self.executor, "mode", "simulate"))
 

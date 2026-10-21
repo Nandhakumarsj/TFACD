@@ -95,7 +95,9 @@ integrity:
   # tested. Aggregating survivors with a robust method, not plain weighted_mean,
   # is defense-in-depth for whatever the detector misses.
   aggregation_method: "trimmed_mean"
-  # Gate 4 attack-simulation parameters (scripts/run_integrity_benchmark.py only).
+  # Attack-simulation parameters. Gaussian sigma is a dimensionless fraction
+  # of the floating-point client-update RMS (expected noise L2 norm ~= sigma
+  # times update L2 norm), not noise added to absolute weights.
   attack_gaussian_sigma: 0.5
   attack_gradual_scaling_growth: 1.0
 

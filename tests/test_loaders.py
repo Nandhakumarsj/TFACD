@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from tfacd.federated.loaders import _load_prepared_cached, client_loaders
 
 
@@ -32,6 +34,15 @@ def test_client_loaders_works_against_real_artifacts_and_reuses_cache():
     cross-contaminate despite sharing the same cached `prepared` object -
     fancy indexing (x[indices]) always copies, never views."""
     _load_prepared_cached.cache_clear()
+    from pathlib import Path
+
+    prepared_path = Path("artifacts/data/prepared.npz")
+    if not prepared_path.exists():
+        pytest.skip(
+            "prepared.npz is not included in this source archive; run "
+            "scripts/preprocess_dataset.py before the artifact-backed loader test"
+        )
+
     from tfacd.common.config import load_config
 
     config = load_config("configs/edge_iiot.yaml")

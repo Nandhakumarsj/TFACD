@@ -169,7 +169,8 @@ def run_benchmark(
                         )
                     elif client_id in malicious and scenario == "gaussian_noise":
                         trained_state = gaussian_noise(
-                            trained_state, sigma=float(integ_cfg.get("attack_gaussian_sigma", 0.5)), seed=run_seed + round_index
+                            trained_state, global_state,
+                            sigma=float(integ_cfg.get("attack_gaussian_sigma", 0.5)), seed=run_seed + round_index
                         )
                     elif client_id in malicious and scenario == "gradual_scaling":
                         trained_state = gradual_scaling(
