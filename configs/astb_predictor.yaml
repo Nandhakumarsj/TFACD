@@ -1,0 +1,25 @@
+# Prediction-side evaluation adapter configuration.
+# Intentionally separate from configs/astb_oracle.yaml, which generates expected
+# benchmark labels. This file configures prediction behaviour only.
+# Policy/capability lists are loaded from configs/trust_policy.yaml, the same
+# production whitelist consumed by the runtime security boundary.
+predictor_policy_version: "1.0"
+rbac:
+  roles:
+    readonly: [observe, log_event]
+    soc_analyst: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture]
+    security_operator: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture, rate_limit, block_source]
+    admin: [observe, log_event, increase_logging, create_ticket, notify_soc, start_capture, rate_limit, block_source, isolate_segment, rotate_session]
+protected_targets: ["127.0.0.1/32", "169.254.0.0/16", "::1/128"]
+context_consistency_threshold: 1.0
+# Conservative approval boundary for high-impact actions.
+human_review:
+  required_capabilities: [rate_limit, block_source, isolate_segment, rotate_session]
+dynamic_trust:
+  block_threshold: 0.40
+  review_threshold: 0.85
+  verified_threshold: 0.85
+  weights:
+    semantic_risk: 0.4
+    context_consistency: 0.3
+    behavioral_trust: 0.3

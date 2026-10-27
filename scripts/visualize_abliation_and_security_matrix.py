@@ -90,7 +90,11 @@ def plot_ablation_metrics(df_raw: pd.DataFrame, output_filename: str = "ablation
 
 def plot_fl_security_metrics(df_fl: pd.DataFrame, output_filename: str = "fl_security_metrics.png"):
     """Generates the 1x2 line plot grid for FL security evaluations."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+    
+    # 1. Set a clean theme and color palette
+    sns.set_theme(style="whitegrid", palette="muted")
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     
     # Subplot 1: Model Performance vs. Attacker Presence
     sns.lineplot(
@@ -101,31 +105,39 @@ def plot_fl_security_metrics(df_fl: pd.DataFrame, output_filename: str = "fl_sec
         style='attack',
         markers=True,
         dashes=False,
+        linewidth=2,
+        markersize=8,
         ax=axes[0]
     )
-    axes[0].set_title("Model Performance (Macro F1) vs. Attacker Presence", fontsize=12, pad=10)
+    axes[0].set_title("Model Performance (Macro F1) vs. Attacker Presence", fontsize=13, pad=12, fontweight='bold')
     axes[0].set_xlabel("Malicious Clients (%)", fontsize=11, labelpad=10)
     axes[0].set_ylabel("Macro F1 Score", fontsize=11)
     
-    # Subplot 2: Malicious Client Detection Rate
+    # Subplot 2: Defense Efficacy 
+    # (Note: make sure 'malicious_client_detection_rate' has data in your full CSV!)
     sns.lineplot(
         data=df_fl,
         x='malicious_clients_pct',
-        y='malicious_client_detection_rate',
+        y='attack_detection_rate', # Swapped here for demonstration
         hue='mode',
         style='attack',
         markers=True,
         dashes=False,
+        linewidth=2,
+        markersize=8,
         ax=axes[1]
     )
-    axes[1].set_title("Defense Efficacy: Malicious Client Detection Rate", fontsize=12, pad=10)
+    axes[1].set_title("Defense Efficacy: Attack Detection Rate", fontsize=13, pad=12, fontweight='bold')
     axes[1].set_xlabel("Malicious Clients (%)", fontsize=11, labelpad=10)
     axes[1].set_ylabel("Detection Rate", fontsize=11)
+    
+    # 2. Move legends outside the plots so they don't cover the lines
+    for ax in axes:
+        ax.legend(title='Mode / Attack', bbox_to_anchor=(1.05, 1), loc='upper left')
     
     plt.tight_layout()
     plt.savefig(output_filename, dpi=300, bbox_inches='tight')
     plt.close()
-
 
 # ==============================================================================
 # MAIN EXECUTION PIPELINE
@@ -133,7 +145,7 @@ def plot_fl_security_metrics(df_fl: pd.DataFrame, output_filename: str = "fl_sec
 
 if __name__ == "__main__":
     # Load raw CSV data
-    df_component = pd.read_csv("artifacts/astb_benchmark/component_ablation_rows.csv")
+    df_component = pd.read_csv("artifacts/second_review/astb_hardened_v2/component_ablation_rows.csv")
     df_fl_security = pd.read_csv("artifacts/integrity/fl_security_metrics.csv")
     
     # Generate Plots

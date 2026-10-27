@@ -21,9 +21,11 @@ from tfacd.evaluation.astb_benchmark import (
     ABLATIONS,
     COMPONENT_ABLATIONS,
     BenchmarkScenario,
+    EvaluationPolicyAdapter,
     SecurityPolicyOracle,
     generate_scenarios,
     load_oracle_config,
+    load_prediction_policy_config,
     load_threat_mapping,
     run_ablation,
 )
@@ -33,6 +35,8 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("--config", default="configs/edge_iiot.yaml")
 parser.add_argument("--oracle", default="configs/astb_oracle.yaml")
+parser.add_argument("--predictor-policy", default="configs/astb_predictor.yaml",
+                    help="Prediction-side RBAC and trust thresholds; separate from oracle labels.")
 parser.add_argument("--dataset", default="artifacts/astb_benchmark/astb_iiot_security_evaluation.jsonl")
 parser.add_argument("--output-dir", default="artifacts/second_review/astb")
 parser.add_argument(
@@ -67,6 +71,19 @@ def ci_summary(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+BOUNDED_METRIC_KEYS = frozenset({
+    "accuracy", "macro_precision", "macro_recall", "macro_f1", "precision", "recall", "f1",
+    "false_authorization_rate", "far_unsafe", "false_allow_rate",
+    "unsafe_action_blocking_rate", "unsafe_human_review_rate",
+    "safe_action_preservation_rate", "non_unsafe_allow_rate", "non_unsafe_human_review_rate", "legitimate_human_review_rate",
+    "human_review_precision", "human_review_recall",
+    "oracle_allow_preservation_rate", "oracle_allow_human_review_rate",
+    "oracle_non_allow_false_authorization_rate", "prompt_injection_success_rate",
+    "unauthorized_tool_call_rate", "policy_violation_allow_rate", "human_review_rate",
+    "context_consistency_raw_mean", "context_consistency_raw_min", "context_consistency_raw_max",
+})
+
+
 def aggregate_metric_dicts(dicts: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate numeric metrics over seeds; sum count matrices, never average them."""
     if not dicts:
@@ -76,9 +93,9 @@ def aggregate_metric_dicts(dicts: list[dict[str, Any]]) -> dict[str, Any]:
     out["confidence_intervals"] = {}
     for key in sorted(keys):
         vals = [d[key] for d in dicts]
-        if key == "confusion_matrix":
+        if key in {"confusion_matrix", "safety_confusion_matrix"}:
             out[key] = np.sum(np.asarray(vals, dtype=np.int64), axis=0).tolist()
-        elif key in {"by_attack_category", "by_attack_subtype"}:
+        elif key in {"by_attack_category", "by_attack_subtype", "per_class"}:
             categories = sorted(set().union(*(d[key].keys() for d in dicts)))
             out[key] = {
                 category: aggregate_metric_dicts([d[key][category] for d in dicts if category in d[key]])
@@ -86,12 +103,22 @@ def aggregate_metric_dicts(dicts: list[dict[str, Any]]) -> dict[str, Any]:
             }
         elif isinstance(vals[0], (int, float)) and not isinstance(vals[0], bool):
             summary = ci_summary([float(v) for v in vals])
+            is_count = (
+                key in {"n", "unsafe_count", "legitimate_count"}
+                or key.endswith(("_numerator", "_denominator", "_count"))
+            )
             # Counts describe the complete pooled dataset. Rates/latencies are
             # means over repeat seeds; their variability is available separately.
-            if key in {"n", "unsafe_count", "legitimate_count"}:
+            if is_count:
                 out[key] = int(sum(int(v) for v in vals))
             else:
+                summary = ci_summary([float(v) for v in vals])
                 out[key] = summary["mean"]
+                if key in BOUNDED_METRIC_KEYS:
+                    if summary["ci95_low"] is not None:
+                        summary["ci95_low"] = max(0.0, float(summary["ci95_low"]))
+                    if summary["ci95_high"] is not None:
+                        summary["ci95_high"] = min(1.0, float(summary["ci95_high"]))
                 out["confidence_intervals"][key] = summary
         else:
             out[key] = vals[0]
@@ -125,6 +152,10 @@ oracle_cfg = load_oracle_config(args.oracle)
 oracle = SecurityPolicyOracle(oracle_cfg, policy, threat_mapping)
 oracle.validate()
 oracle_hash = sha256(args.oracle)
+predictor_cfg = load_prediction_policy_config(args.predictor_policy)
+predictor_policy = EvaluationPolicyAdapter(predictor_cfg, policy)
+predictor_policy.validate()
+predictor_policy_hash = sha256(args.predictor_policy)
 
 out = Path(args.output_dir)
 out.mkdir(parents=True, exist_ok=True)
@@ -158,6 +189,11 @@ manifest = {
     "experiment": "ASTB-IIoT paired ablation evaluation",
     "oracle_version": str(oracle_cfg.get("oracle_version", "unversioned")),
     "oracle_sha256": oracle_hash,
+    "predictor_policy_version": str(predictor_cfg.get("predictor_policy_version", "unversioned")),
+    "predictor_policy_sha256": predictor_policy_hash,
+    "prediction_thresholds": {"block": predictor_policy.block_threshold,
+                             "human_review_below": predictor_policy.review_threshold,
+                             "context_consistency": predictor_policy.context_consistency_threshold},
     "policy_sha256": sha256(policy_path),
     "threat_mapping_sha256": sha256(threat_mapping_path),
     "config_sha256": sha256(args.config),
@@ -182,8 +218,17 @@ manifest = {
     "metric_definitions": {
         "UABR": "unsafe=true and predicted BLOCK / all unsafe=true scenarios",
         "FAR": "unsafe=true and predicted ALLOW / all unsafe=true scenarios",
+        "FRR": "unsafe=false and predicted BLOCK / all unsafe=false scenarios; HUMAN_REVIEW is not counted as BLOCK",
+        "FRR_interpretation": "hard-block rejection rate for legitimate proposals; report legitimate_human_review_rate separately",
         "unsafe_human_review_rate": "unsafe=true and predicted HUMAN_REVIEW / all unsafe=true scenarios",
-        "SAPR": "unsafe=false and predicted ALLOW / all unsafe=false scenarios; this broad denominator includes legitimate proposals whose oracle requires HUMAN_REVIEW",
+        "SAPR": "expected_decision=ALLOW and predicted_decision=ALLOW / all expected_decision=ALLOW scenarios",
+        "confusion_matrix": "three-class oracle-decision matrix: rows=expected_decision and columns=predicted_decision in decision_labels order",
+        "safety_confusion_matrix": "two-row by three-column matrix: rows=unsafe/legitimate, columns=ALLOW/BLOCK/HUMAN_REVIEW",
+        "count_aggregation": "numerator/denominator/count fields are summed across seeds; rates and latencies are mean seed-level values with confidence intervals",
+        "non_unsafe_allow_rate": "unsafe=false and predicted ALLOW / all unsafe=false scenarios; may include HUMAN_REVIEW controls",
+        "human_review_precision": "expected HUMAN_REVIEW among all predicted HUMAN_REVIEW scenarios",
+        "human_review_recall": "predicted HUMAN_REVIEW among all expected HUMAN_REVIEW scenarios",
+        "oracle_non_allow_false_authorization_rate": "expected BLOCK or HUMAN_REVIEW predicted ALLOW / all expected non-ALLOW scenarios",
         "oracle_allow_preservation_rate": "oracle ALLOW and predicted ALLOW / all oracle ALLOW scenarios",
         "human_review_rate": "predicted HUMAN_REVIEW / all scenarios",
         "confidence_interval": "two-sided 95% Student-t interval across five seed-level metrics; rows are paired by seed for variant differences",
@@ -195,7 +240,7 @@ for matrix_name, specs in matrix_specs:
     combined_rows: list[dict[str, Any]] = []
     for run in runs:
         rows, summary = run_ablation(
-            run["scenarios"], specs=specs, oracle=oracle, threat_mapping=threat_mapping
+            run["scenarios"], specs=specs, predictor_policy=predictor_policy, threat_mapping=threat_mapping
         )
         for row in rows:
             row["run_seed"] = run["seed"]
@@ -212,7 +257,8 @@ for matrix_name, specs in matrix_specs:
     if "full_astb" in variant_names:
         primary_metrics = [
             "accuracy", "macro_f1", "far_unsafe", "unsafe_action_blocking_rate",
-            "safe_action_preservation_rate", "oracle_allow_preservation_rate", "human_review_rate",
+            "false_rejection_rate", "safe_action_preservation_rate",
+            "oracle_allow_preservation_rate", "human_review_rate",
         ]
         for other in variant_names:
             if other == "full_astb":
@@ -223,7 +269,13 @@ for matrix_name, specs in matrix_specs:
                     float(entry["variants"]["full_astb"][metric]) - float(entry["variants"][other][metric])
                     for entry in seed_summaries
                 ]
-                paired_comparisons[other][metric] = ci_summary(diffs)
+                difference_summary = ci_summary(diffs)
+                # Differences of bounded rates/scores lie in [-1, 1].
+                if difference_summary["ci95_low"] is not None:
+                    difference_summary["ci95_low"] = max(-1.0, float(difference_summary["ci95_low"]))
+                if difference_summary["ci95_high"] is not None:
+                    difference_summary["ci95_high"] = min(1.0, float(difference_summary["ci95_high"]))
+                paired_comparisons[other][metric] = difference_summary
 
     summary_out = {
         "matrix": matrix_name,
@@ -258,12 +310,13 @@ for matrix_name, specs in matrix_specs:
             writer.writerow(serialized)
 
     print(f"\n=== {matrix_name.upper()} ABLATION ({len(runs)} run(s)) ===")
-    print(f"{'variant':<24} {'F1':>8} {'FAR':>8} {'UABR':>8} {'SAPR':>8} {'Review':>8} {'p95 ms':>10}")
+    print(f"{'variant':<24} {'F1':>8} {'FAR':>8} {'UABR':>8} {'FRR':>8} {'SAPR':>8} {'Review':>8} {'p95 ms':>10}")
     for name in variant_names:
         metric = variants[name]
         print(
             f"{name:<24} {metric['macro_f1']:>8.3f} {metric['far_unsafe']:>8.3f} "
-            f"{metric['unsafe_action_blocking_rate']:>8.3f} {metric['safe_action_preservation_rate']:>8.3f} "
+            f"{metric['unsafe_action_blocking_rate']:>8.3f} {metric['false_rejection_rate']:>8.3f} "
+            f"{metric['safe_action_preservation_rate']:>8.3f} "
             f"{metric['human_review_rate']:>8.3f} {metric['latency_p95_ms']:>10.2f}"
         )
         if len(runs) > 1:
